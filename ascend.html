@@ -9,7 +9,10 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.3 - ZONES, SOLIDS, GHOST, SOUND, BUZZ    ║
+║  CURRENT BUILD : v1.4 - STEADY POWER-UP                      ║
+║  v1.4: blue level pickup (STEADY_CHANCE per platform) gives  ║
+║        two minutes of calm controls: slower side accel and   ║
+║        top speed, more grip, half wind, softer glider dive.  ║
 ║  v1.3: five height zones (cycle every 6000m) change sky,     ║
 ║        weather, colors, wind and gravity. Solid steel blocks ║
 ║        you cannot jump through (rockets still pass). Ghost   ║
@@ -348,6 +351,7 @@ function generateUpTo(targetY) {
     }
     platforms.push(np);
     maybeSpawnRocket(np);
+    maybeSpawnSteady(np);
     maybeSpawnGlider(np);
     maybeSpawnGem(np);
     maybeSpawnToken(np);
@@ -386,6 +390,7 @@ function updateMovingPlatforms(dt) {
 function respawnFromY() {
   platforms = platforms.filter(p => p.isGround);
   rockets = [];
+  steadies = [];
   gliders = [];
   gems = [];
   coins = [];
@@ -717,6 +722,7 @@ function initPlayer() {
     facing:      1,
     peakY:       -CFG.PLAYER_H - 42,
     rocketTimer: 0,
+    steadyTime:  0,
     hasGlider:   false,
     gliderTime:  0,
   };
@@ -832,6 +838,7 @@ const audio = {
     spent:       () => { if (SFX.ok('spent')) SFX.tone('sine', 900, 200, 0.5, 0.14); buzz([30, 30, 30]); },
     bonk:        () => { if (SFX.ok('bonk', 120)) { SFX.tone('square', 180, 110, 0.08, 0.14); SFX.noise(0.05, 0.2, 800); } buzz(25); },
     warp:        () => { if (SFX.ok('warp')) { SFX.tone('sine', 1400, 120, 0.45, 0.14); SFX.noise(0.4, 0.15, 3000); } buzz(70); },
+    steady:      () => { if (SFX.ok('steady')) [330, 440, 554].forEach((f, i) => SFX.tone('sine', f, 0, 0.25, 0.1, i * 0.07)); buzz([30, 40, 30]); },
     zone:        () => { if (SFX.ok('zone')) [392, 494, 587, 784].forEach((f, i) => SFX.tone('triangle', f, 0, 0.6, 0.07, i * 0.12)); buzz([50, 60, 50, 60, 120]); },
   }
 };
@@ -1334,6 +1341,75 @@ const ROCKET_TIME = 3.0;   // seconds of flight
 const ROCKET_SPEED = -13;  // upward velocity during flight
 const ROCKET_CHANCE = 0.03; // chance per platform to carry a pickup
 
+// ── STEADY POWER-UP: two minutes of calm, controllable side movement ──
+let steadies = [];
+const STEADY_CHANCE   = 0.035;
+const STEADY_TIME     = 120000;  // ms
+const STEADY_ACCEL    = 1.1;     // vs CFG.PLAYER_SPEED
+const STEADY_FRICTION = 0.84;    // vs CFG.FRICTION (higher keeps it smooth, lower accel caps top speed)
+
+function maybeSpawnSteady(p) {
+  if (p.solid || p.vx) return;
+  if (Math.random() < STEADY_CHANCE) {
+    steadies.push({ x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 });
+  }
+}
+
+function updateSteadies(ms) {
+  const pcx = player.x + player.w / 2;
+  const pcy = player.y + player.h / 2;
+  for (const st of steadies) {
+    if (st.taken) continue;
+    const dx = pcx - st.x, dy = pcy - st.y;
+    if (dx * dx + dy * dy < 22 * 22) {
+      st.taken = true;
+      player.steadyTime = STEADY_TIME;
+      showBanner('STEADY CONTROLS');
+      audio.triggers.steady();
+      for (let i = 0; i < 16; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 2 + Math.random() * 4;
+        particles.push({
+          x: st.x, y: st.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+          life: 1, decay: 0.03, size: 2 + Math.random() * 3,
+          hue: 205 + Math.random() * 20, type: 'splash',
+        });
+      }
+    }
+  }
+  steadies = steadies.filter(st => !st.taken && (mode === 'challenge' || st.y < cameraY + H + 200));
+  if (player.steadyTime > 0) {
+    player.steadyTime -= ms;
+    if (player.steadyTime <= 0) {
+      player.steadyTime = 0;
+      showBanner('STEADY WORE OFF');
+      audio.triggers.spent();
+    }
+  }
+}
+
+function drawSteadies(time) {
+  for (const st of steadies) {
+    const sy = st.y - cameraY;
+    if (sy < -20 || sy > H + 20) continue;
+    const y = st.y + Math.sin(time * 0.004 + st.ph) * 3;
+    ctx.globalAlpha = 0.3 + 0.2 * Math.abs(Math.sin(time * 0.005 + st.ph));
+    ctx.fillStyle = '#3d8bff';
+    ctx.beginPath(); ctx.arc(st.x, y, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    // spirit level: rounded bar with a bubble centered
+    ctx.fillStyle = '#1b2f6b';
+    ctx.fillRect(st.x - 10, y - 4, 20, 8);
+    ctx.fillStyle = '#bfe0ff';
+    ctx.fillRect(st.x - 8, y - 2, 16, 4);
+    ctx.fillStyle = '#3dff9b';
+    ctx.beginPath(); ctx.arc(st.x, y, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#1b2f6b';
+    ctx.fillRect(st.x - 4, y - 3, 1, 6);
+    ctx.fillRect(st.x + 3, y - 3, 1, 6);
+  }
+}
+
 function maybeSpawnRocket(p) {
   if (Math.random() < ROCKET_CHANCE) {
     rockets.push({ x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 });
@@ -1565,6 +1641,7 @@ function drawStarfield(time) {
 function initGame() {
   platforms       = [];
   rockets         = [];
+  steadies        = [];
   gliders         = [];
   gems            = [];
   gemCount        = 0;
@@ -1596,16 +1673,18 @@ function updatePhysics(dt, ms) {
   const inp = getInput();
 
   // Horizontal
-  if (inp.left)  player.vx -= CFG.PLAYER_SPEED;
-  if (inp.right) player.vx += CFG.PLAYER_SPEED;
+  const steady = player.steadyTime > 0;
+  const accel = steady ? STEADY_ACCEL : CFG.PLAYER_SPEED;
+  if (inp.left)  player.vx -= accel;
+  if (inp.right) player.vx += accel;
 
   // Wind push - only while airborne, doubled under canopy
   if (!player.onGround) {
     const windMult = player.chute ? 2.2 : 1.0;
-    player.vx += wind.force * windMult * zoneFeel.wind * dt;
+    player.vx += wind.force * windMult * zoneFeel.wind * (steady ? 0.5 : 1) * dt;
   }
 
-  player.vx *= CFG.FRICTION;
+  player.vx *= steady ? STEADY_FRICTION : CFG.FRICTION;
   if (Math.abs(player.vx) < 0.05) player.vx = 0;
 
   // Gravity - none during rocket flight, bubble at apex when holding jump, reduced under chute
@@ -1641,7 +1720,7 @@ function updatePhysics(dt, ms) {
       // Dive: holding a direction tilts nose down = faster fall + extra h-speed
       if (inp.left || inp.right) {
         if (player.vy > GLIDER_DIVE_FALL) player.vy = GLIDER_DIVE_FALL;
-        player.vx += (inp.right ? 1 : -1) * 1.2;
+        player.vx += (inp.right ? 1 : -1) * (steady ? 0.4 : 1.2);
       } else {
         if (player.vy > GLIDER_MAX_FALL) player.vy = GLIDER_MAX_FALL;
       }
@@ -1922,6 +2001,7 @@ function render(time) {
 
   // Rocket pickups
   drawRockets(time);
+  drawSteadies(time);
   drawGliders(time);
   drawGems(time);
   drawTokens(time);
@@ -2104,6 +2184,21 @@ function drawHUD() {
     ctx.fillText('best ' + best + 'm', W - 14, 46);
   }
 
+  // Steady timer
+  if (player && player.steadyTime > 0) {
+    const sp = player.steadyTime / STEADY_TIME;
+    const secs = Math.ceil(player.steadyTime / 1000);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('steady ' + Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0'), 14, 120);
+    ctx.fillStyle = '#16223f';
+    ctx.fillRect(14, 125, 60, 5);
+    ctx.fillStyle = sp > 0.15 ? '#3d8bff' : '#ff4466';
+    ctx.fillRect(14, 125, 60 * sp, 5);
+    ctx.textAlign = 'right';
+  }
+
   // Parachute indicator
   if (player && !player.onGround && !player.chute && player.vy > 0) {
     const pct = Math.min(player.fallTimer / CFG.CHUTE_DEPLOY_S, 1);
@@ -2200,6 +2295,7 @@ function loop(ts) {
     updateTrail();
     updateShooters();
     updateRockets(ms);
+    updateSteadies(ms);
     updateGliders();
     updateGems();
     updateTokens(ms);
