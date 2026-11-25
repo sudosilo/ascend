@@ -9,7 +9,14 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.2 - CHALLENGE MODE                       ║
+║  CURRENT BUILD : v1.3 - ZONES, SOLIDS, GHOST, SOUND, BUZZ    ║
+║  v1.3: five height zones (cycle every 6000m) change sky,     ║
+║        weather, colors, wind and gravity. Solid steel blocks ║
+║        you cannot jump through (rockets still pass). Ghost   ║
+║        replays your best run per mode. WebAudio synth sound  ║
+║        effects, optional music file ascend-music-v1.mp3,     ║
+║        phone vibration. Long falls (6s, above 30m) warp you ║
+║        straight to the ground. Climb renamed MARATHON.       ║
 ║  v1.2: mode picker in the ☰ overlay (CLIMB / CHALLENGE).     ║
 ║        Challenge: numbered tokens on every third platform,   ║
 ║        must be taken in order. Wrong token flashes red and   ║
@@ -124,6 +131,12 @@
   }
   #lbSave { background: #3d8bff; color: #fff; }
   #lbClose { background: transparent; color: #6fb0ff; }
+  #lbOpts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+  #lbOpts button {
+    padding: 10px 0; font: bold 12px monospace; border-radius: 6px;
+    border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
+  }
+  #lbOpts button.on { background: #3d8bff; color: #fff; }
   #lbModes { display: flex; gap: 8px; margin-bottom: 16px; }
   #lbModes button {
     flex: 1; padding: 10px 0; font: bold 13px monospace; border-radius: 6px;
@@ -148,8 +161,15 @@
   <h2>ASCEND</h2>
   <label>MODE</label>
   <div id="lbModes">
-    <button id="modeClimb" data-mode="climb">CLIMB</button>
+    <button id="modeClimb" data-mode="climb">MARATHON</button>
     <button id="modeChallenge" data-mode="challenge">CHALLENGE</button>
+  </div>
+  <label>OPTIONS</label>
+  <div id="lbOpts">
+    <button data-opt="sound">SOUND</button>
+    <button data-opt="music">MUSIC</button>
+    <button data-opt="buzz">VIBRATE</button>
+    <button data-opt="ghost">GHOST</button>
   </div>
   <h2 id="lbTitle">LEADERBOARD</h2>
   <label for="lbName">YOUR NAME</label>
@@ -223,7 +243,7 @@ const touch = { left: false, right: false, jump: false };
 let jumpPressedThisFrame = false;
 let jumpWasDown = false;
 
-window.addEventListener('keydown', e => { if (e.target && e.target.tagName === 'INPUT') return; keys[e.code] = true;  e.preventDefault(); });
+window.addEventListener('keydown', e => { if (e.target && e.target.tagName === 'INPUT') return; SFX.unlock(); keys[e.code] = true;  e.preventDefault(); });
 window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -235,6 +255,7 @@ canvas.addEventListener('touchend',   e => {
 
 function handleTouchStart(e) {
   e.preventDefault();
+  SFX.unlock();
   // Tap to start / retry from menu or dead screen
   if (state !== STATE.PLAYING) {
     setState(STATE.PLAYING);
@@ -301,6 +322,7 @@ let highestPlatY = 0;     // y of the highest platform generated so far
 let worldGenBottom = 800; // lowest rescue platform generated
 
 function rand(min, max) { return min + Math.random() * (max - min); }
+const SOLID_CHANCE = 0.13;
 
 function addGround() {
   platforms.push({ x: 0, y: 0, w: W, h: 40, isGround: true });
@@ -317,6 +339,12 @@ function generateUpTo(targetY) {
     // ~15% of platforms drift left-right (harder to land)
     if (Math.random() < 0.15) {
       np.vx = (0.6 + Math.random() * 0.9) * (Math.random() < 0.5 ? 1 : -1);
+    } else if (highestPlatY < -400 && Math.random() < SOLID_CHANCE) {
+      // Solid steel block: cannot be jumped through from below
+      np.solid = true;
+      np.h = 16;
+      np.w = Math.max(np.w, 80);
+      np.x = Math.min(np.x, W - np.w);
     }
     platforms.push(np);
     maybeSpawnRocket(np);
@@ -420,7 +448,7 @@ function updateTokens(ms) {
         LB.queue();
       }
       if ((tokenNeed - 1) % 10 === 0) showBanner('TOKEN ' + (tokenNeed - 1) + '!');
-      audio.triggers.gem();
+      audio.triggers.token();
       for (let i = 0; i < 18; i++) {
         const a = Math.random() * Math.PI * 2;
         const sp = 2 + Math.random() * 5;
@@ -434,6 +462,7 @@ function updateTokens(ms) {
       t.flash = 700;
       tokenWrongT = 1500;
       showBanner('GET ' + tokenNeed + ' FIRST');
+      audio.triggers.wrong();
     }
   }
   tokens = tokens.filter(t => !t.taken);
@@ -495,6 +524,180 @@ function drawTokenArrow(time) {
 }
 
 // ════════════════════════════════════════════════════════════
+//  SOLID BLOCKS, FALL WARP
+// ════════════════════════════════════════════════════════════
+const FALL_WARP_MS = 6000;
+let warpFlash = 0;
+
+function drawSolid(p, time) {
+  // steel body
+  ctx.fillStyle = '#5b6b8c';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  // hazard stripes
+  ctx.save();
+  ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+  ctx.fillStyle = '#3d8bff';
+  for (let sx = p.x - p.h; sx < p.x + p.w; sx += 14) {
+    ctx.beginPath();
+    ctx.moveTo(sx, p.y + p.h); ctx.lineTo(sx + 6, p.y + p.h);
+    ctx.lineTo(sx + 6 + p.h, p.y); ctx.lineTo(sx + p.h, p.y);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  // frame + rivets
+  ctx.strokeStyle = '#1b2440'; ctx.lineWidth = 2;
+  ctx.strokeRect(p.x + 1, p.y + 1, p.w - 2, p.h - 2);
+  ctx.fillStyle = '#d7e3ff';
+  ctx.fillRect(p.x, p.y, p.w, 2);
+  ctx.fillStyle = '#1b2440';
+  for (let rx = p.x + 5; rx < p.x + p.w - 3; rx += 18) {
+    ctx.fillRect(rx, p.y + 4, 2, 2);
+    ctx.fillRect(rx, p.y + p.h - 5, 2, 2);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  ZONES - every stretch of height has its own sky, weather and feel
+// ════════════════════════════════════════════════════════════
+const ZONE_CYCLE = 6000;   // meters before the zones loop with a new lap
+const ZONES = [
+  { at: 0,    name: 'NEON BASEMENT', top: '#0d0d14', bot: '#0d0d14', grid: '#8899ff', starA: 1,   weather: 'rain',  wcol: '160,190,255', player: '#e8e8d0', grav: 1.00, wind: 1.0 },
+  { at: 600,  name: 'SUNRISE DECK',  top: '#bfe3ff', bot: '#ffd9b8', grid: '#e08a5a', starA: 0.2, weather: 'rain',  wcol: '70,110,190',  player: '#1f3a8a', grav: 1.00, wind: 1.3 },
+  { at: 1500, name: 'CLOUD KINGDOM', top: '#d6ebff', bot: '#f4f9ff', grid: '#7aa6e0', starA: 0.1, weather: 'snow',  wcol: '120,160,230', player: '#1f3a8a', grav: 0.95, wind: 1.6 },
+  { at: 2700, name: 'AURORA FIELD',  top: '#e6dcff', bot: '#e3fff2', grid: '#8a6be0', starA: 0.3, weather: 'spark', wcol: '90,200,160',  player: '#2a2a8a', grav: 0.92, wind: 0.8 },
+  { at: 4200, name: 'STRATOSPHERE',  top: '#b8c8e8', bot: '#e9eef7', grid: '#3d8bff', starA: 0.6, weather: 'dust',  wcol: '60,80,140',   player: '#0f2a6e', grav: 0.86, wind: 2.0 },
+];
+let zoneIdx = 0, zoneLap = 0;
+const zoneFeel = { grav: 1, wind: 1 };
+
+function zoneAt(m) {
+  const lap = Math.floor(Math.max(0, m) / ZONE_CYCLE);
+  const r = Math.max(0, m) - lap * ZONE_CYCLE;
+  let i = 0;
+  for (let k = 0; k < ZONES.length; k++) if (r >= ZONES[k].at) i = k;
+  return { i, lap };
+}
+
+function updateZone() {
+  const m = Math.floor(-player.y / 10);
+  const z = zoneAt(m);
+  if (z.i !== zoneIdx || z.lap !== zoneLap) {
+    const up = z.lap > zoneLap || (z.lap === zoneLap && z.i > zoneIdx);
+    zoneIdx = z.i; zoneLap = z.lap;
+    if (up) {
+      showBanner('ZONE ' + (zoneLap * ZONES.length + zoneIdx + 1) + ' ' + ZONES[zoneIdx].name);
+      audio.triggers.zone();
+    }
+  }
+  const Z = ZONES[zoneIdx];
+  zoneFeel.grav += (Z.grav - zoneFeel.grav) * 0.02;
+  zoneFeel.wind += (Z.wind - zoneFeel.wind) * 0.02;
+}
+
+function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function mixHex(a, b, t) {
+  const A = hexRgb(a), B = hexRgb(b);
+  return 'rgb(' + A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(',') + ')';
+}
+
+// Sky: blends into the next zone across the last 80m of each zone
+function zoneSky() {
+  const m = Math.max(0, Math.floor(-cameraY / 10));
+  const lap = Math.floor(m / ZONE_CYCLE), r = m - lap * ZONE_CYCLE;
+  let i = 0;
+  for (let k = 0; k < ZONES.length; k++) if (r >= ZONES[k].at) i = k;
+  const nextAt = i + 1 < ZONES.length ? ZONES[i + 1].at : ZONE_CYCLE;
+  const j = (i + 1) % ZONES.length;
+  const t = Math.max(0, Math.min(1, (r - (nextAt - 80)) / 80));
+  const lapHue = (lap * 40) % 360;
+  return {
+    top: mixHex(ZONES[i].top, ZONES[j].top, t),
+    bot: mixHex(ZONES[i].bot, ZONES[j].bot, t),
+    t, i, j, lapHue,
+  };
+}
+
+function drawZoneSky() {
+  const z = zoneSky();
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, z.top);
+  g.addColorStop(1, z.bot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  if (z.lapHue) {
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = 'hsl(' + z.lapHue + ', 80%, 60%)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  GHOST - replays your best run for the current mode
+// ════════════════════════════════════════════════════════════
+const GHOST = {
+  rec: [], recT: 0, runT: 0, play: null, playBest: 0, dirty: false,
+  key() { return 'ascendGhostRun_' + mode; },
+  metric() { return mode === 'challenge' ? tokenNeed - 1 : score; },
+  load() {
+    this.play = null; this.playBest = 0;
+    try {
+      const j = JSON.parse(localStorage.getItem(this.key()) || 'null');
+      if (j && j.p && j.p.length) { this.play = j.p; this.playBest = j.best || 0; }
+    } catch (e) {}
+  },
+  reset() { this.rec = []; this.recT = 0; this.runT = 0; this.dirty = false; this.load(); },
+  record(ms) {
+    this.runT += ms;
+    this.recT += ms;
+    if (this.recT >= 100 && this.rec.length < 18000) {
+      this.recT = 0;
+      this.rec.push(+(player.x / W).toFixed(3), Math.round(player.y));
+    }
+    if (this.metric() > this.playBest) this.dirty = true;
+  },
+  save() {
+    if (!this.dirty) return;
+    const m = this.metric();
+    if (m <= this.playBest) return;
+    try {
+      localStorage.setItem(this.key(), JSON.stringify({ best: m, p: this.rec }));
+      this.playBest = m;
+      this.dirty = false;
+    } catch (e) {}
+  },
+  pos() {
+    if (!this.play || !SETTINGS.ghost) return null;
+    const i = Math.floor(this.runT / 100) * 2;
+    if (i + 1 >= this.play.length) return { x: this.play[this.play.length - 2] * W, y: this.play[this.play.length - 1], done: true };
+    return { x: this.play[i] * W, y: this.play[i + 1] };
+  },
+  draw(time) {
+    const g = this.pos();
+    if (!g) return;
+    ctx.globalAlpha = g.done ? 0.2 : 0.38 + 0.12 * Math.sin(time * 0.006);
+    ctx.fillStyle = '#3d8bff';
+    ctx.fillRect(g.x - 2, g.y - 2, CFG.PLAYER_W + 4, CFG.PLAYER_H + 4);
+    ctx.fillStyle = '#bfe0ff';
+    ctx.fillRect(g.x, g.y, CFG.PLAYER_W, CFG.PLAYER_H);
+    ctx.fillStyle = '#3d8bff';
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('GHOST', g.x + CFG.PLAYER_W / 2, g.y - 6);
+    ctx.globalAlpha = 1;
+  },
+  hud() {
+    const g = this.pos();
+    if (!g) return;
+    const d = Math.round((g.y - player.y) / 10);
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = d >= 0 ? '#3dff9b' : '#ff6688';
+    ctx.fillText('ghost ' + (d >= 0 ? '+' : '') + d + 'm', 14, 100);
+  },
+};
+
+// ════════════════════════════════════════════════════════════
 //  PLAYER
 // ════════════════════════════════════════════════════════════
 let player;
@@ -530,19 +733,106 @@ let best  = parseInt(localStorage.getItem('best') || '0');
 // ════════════════════════════════════════════════════════════
 //  AUDIO TRIGGERS stub
 // ════════════════════════════════════════════════════════════
+const SETTINGS = {
+  sound:   localStorage.getItem('ascendSound')   !== 'off',
+  music:   localStorage.getItem('ascendMusic')   !== 'off',
+  buzz:    localStorage.getItem('ascendBuzz')    !== 'off',
+  ghost:   localStorage.getItem('ascendGhost')   !== 'off',
+};
+function saveSetting(k) { localStorage.setItem('ascend' + k[0].toUpperCase() + k.slice(1), SETTINGS[k] ? 'on' : 'off'); }
+
+// ── Synth sound effects (WebAudio, no files) ────────────────
+const SFX = {
+  ac: null, master: null, last: {},
+  unlock() {
+    if (!this.ac) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ac = new AC();
+      this.master = this.ac.createGain();
+      this.master.gain.value = 0.35;
+      this.master.connect(this.ac.destination);
+    }
+    if (this.ac.state === 'suspended') this.ac.resume();
+    MUSIC.start();
+  },
+  ok(name, gap) {
+    if (!SETTINGS.sound || !this.ac) return false;
+    const now = performance.now();
+    if (this.last[name] && now - this.last[name] < (gap || 40)) return false;
+    this.last[name] = now;
+    return true;
+  },
+  tone(type, f1, f2, dur, vol, delay) {
+    const t = this.ac.currentTime + (delay || 0);
+    const o = this.ac.createOscillator(), g = this.ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f1, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + dur + 0.02);
+  },
+  noise(dur, vol, freq, delay) {
+    const t = this.ac.currentTime + (delay || 0);
+    const len = Math.floor(this.ac.sampleRate * dur);
+    const buf = this.ac.createBuffer(1, len, this.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = this.ac.createBufferSource(); src.buffer = buf;
+    const f = this.ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq || 1200;
+    const g = this.ac.createGain(); g.gain.value = vol;
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t);
+  },
+};
+
+// ── Music: plays ascend-music-v1.mp3 from the repo if it exists ─
+const MUSIC = {
+  el: null, tried: false,
+  start() {
+    if (!SETTINGS.music) return;
+    if (!this.el && !this.tried) {
+      this.tried = true;
+      const a = new Audio('ascend-music-v1.mp3');
+      a.loop = true; a.volume = 0.45;
+      a.addEventListener('error', () => { this.el = null; });
+      this.el = a;
+    }
+    if (this.el && this.el.paused) this.el.play().catch(() => {});
+  },
+  stop() { if (this.el) this.el.pause(); },
+};
+
+function buzz(pattern) {
+  if (!SETTINGS.buzz || !navigator.vibrate) return;
+  try { navigator.vibrate(pattern); } catch (e) {}
+}
+
 const audio = {
   triggers: {
-    jump:        () => {},
-    land:        () => {},
+    jump:        () => { if (SFX.ok('jump')) SFX.tone('square', 260, 620, 0.12, 0.12); },
+    land:        (v) => {
+      const k = Math.min(1, (v || 3) / 13);
+      if (SFX.ok('land', 60)) { SFX.noise(0.08 + k * 0.1, 0.25 + k * 0.4, 500 + k * 600); SFX.tone('sine', 140, 60, 0.12, 0.2 * k + 0.05); }
+      buzz(Math.round(12 + k * 38));
+    },
     die:         () => {},
-    chuteOpen:   () => {},
-    chuteClose:  () => {},
-    coin:        () => {},
-    rocket:      () => {},
-    glider:      () => {},
-    gem:         () => {},
-    milestone:   () => {},
+    chuteOpen:   () => { if (SFX.ok('chuteOpen')) { SFX.noise(0.15, 0.25, 2500); SFX.tone('triangle', 300, 420, 0.1, 0.1); } buzz(15); },
+    chuteClose:  () => { if (SFX.ok('chuteClose')) SFX.tone('triangle', 380, 220, 0.1, 0.08); },
+    coin:        () => { if (SFX.ok('coin', 30)) { SFX.tone('square', 988, 0, 0.06, 0.08); SFX.tone('square', 1319, 0, 0.12, 0.08, 0.06); } },
+    rocket:      () => { if (SFX.ok('rocket')) { SFX.noise(1.2, 0.35, 900); SFX.tone('sawtooth', 120, 600, 1.0, 0.08); } buzz([60, 40, 120]); },
+    glider:      () => { if (SFX.ok('glider')) SFX.tone('sine', 400, 1200, 0.35, 0.15); buzz(40); },
+    gem:         () => { if (SFX.ok('gem', 30)) { SFX.tone('triangle', 1047, 0, 0.08, 0.1); SFX.tone('triangle', 1568, 0, 0.14, 0.08, 0.05); } },
+    milestone:   () => { if (SFX.ok('milestone')) [523, 659, 784, 1047].forEach((f, i) => SFX.tone('square', f, 0, 0.14, 0.1, i * 0.08)); buzz([40, 30, 40, 30, 80]); },
     bgStart:     () => {},
+    token:       () => { if (SFX.ok('token')) [659, 880, 1175].forEach((f, i) => SFX.tone('triangle', f, 0, 0.1, 0.13, i * 0.05)); buzz(30); },
+    wrong:       () => { if (SFX.ok('wrong', 300)) { SFX.tone('sawtooth', 160, 90, 0.3, 0.14); } buzz([80, 50, 80]); },
+    spent:       () => { if (SFX.ok('spent')) SFX.tone('sine', 900, 200, 0.5, 0.14); buzz([30, 30, 30]); },
+    bonk:        () => { if (SFX.ok('bonk', 120)) { SFX.tone('square', 180, 110, 0.08, 0.14); SFX.noise(0.05, 0.2, 800); } buzz(25); },
+    warp:        () => { if (SFX.ok('warp')) { SFX.tone('sine', 1400, 120, 0.45, 0.14); SFX.noise(0.4, 0.15, 3000); } buzz(70); },
+    zone:        () => { if (SFX.ok('zone')) [392, 494, 587, 784].forEach((f, i) => SFX.tone('triangle', f, 0, 0.6, 0.07, i * 0.12)); buzz([50, 60, 50, 60, 120]); },
   }
 };
 
@@ -745,10 +1035,12 @@ function grantPowerup(kind) {
     player.chute = false;
     player.fallTimer = 0;
     showBanner('🚀 ROCKET UNLOCKED!');
+    audio.triggers.rocket();
   } else {
     player.hasGlider = true;
     player.gliderTime = GLIDER_TIME;
     showBanner('🪂 GLIDER UNLOCKED!');
+    audio.triggers.glider();
   }
   // celebration burst
   for (let i = 0; i < 24; i++) {
@@ -810,7 +1102,8 @@ let streaks = [];
 function updateStreaks() {
   const strength = Math.abs(wind.force);
   // Spawn rate scales with wind strength - calm = almost none
-  if (Math.random() < 0.1 + strength * 3) {
+  const wzz = ZONES[zoneIdx].weather;
+  if (Math.random() < (wzz === 'rain' ? 0.1 + strength * 3 : 0.35 + strength * 2)) {
     streaks.push({
       x: Math.random() * W,
       y: -10,
@@ -818,15 +1111,35 @@ function updateStreaks() {
     });
   }
   for (const s of streaks) {
-    s.x += wind.force * 30;          // lean hard with the wind
-    s.y += 7 + strength * 6;         // fall
+    const wz = ZONES[zoneIdx].weather;
+    const slow = wz === 'snow' ? 0.3 : wz === 'dust' ? 0.15 : wz === 'spark' ? 0.5 : 1;
+    s.x += wind.force * 30 * (wz === 'dust' ? 1.6 : 1);   // lean hard with the wind
+    s.y += (7 + strength * 6) * slow;                      // fall
     s.life -= 0.012;
   }
   streaks = streaks.filter(s => s.life > 0 && s.y < H + 20);
 }
 function drawStreaks() {
   const strength = Math.abs(wind.force);
-  ctx.strokeStyle = 'rgba(160, 190, 255, 0.35)';
+  const Z = ZONES[zoneIdx];
+  if (Z.weather !== 'rain') {
+    for (const s of streaks) {
+      ctx.globalAlpha = s.life * (Z.weather === 'dust' ? 0.5 : 0.8);
+      if (Z.weather === 'snow') {
+        ctx.fillStyle = 'rgba(' + Z.wcol + ',0.9)';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 1.5 + (s.y % 3), 0, Math.PI * 2); ctx.fill();
+      } else if (Z.weather === 'spark') {
+        ctx.fillStyle = (Math.floor(s.y / 40) % 2) ? 'rgba(' + Z.wcol + ',1)' : 'rgba(150,110,240,1)';
+        ctx.fillRect(s.x, s.y, 2, 6);
+      } else {
+        ctx.fillStyle = 'rgba(' + Z.wcol + ',1)';
+        ctx.fillRect(s.x, s.y, 1.5, 1.5);
+      }
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
+  ctx.strokeStyle = 'rgba(' + Z.wcol + ', 0.35)';
   ctx.lineWidth = 1;
   for (const s of streaks) {
     ctx.globalAlpha = s.life * (0.2 + strength * 1.5);
@@ -1225,15 +1538,15 @@ function drawStarfield(time) {
     const sy = ((s.y - cameraY * speeds[s.layer]) % H + H) % H;
     const sx = s.x % W;
     const twinkle = 0.4 + 0.6 * Math.abs(Math.sin(time * 0.002 + s.tw));
-    ctx.globalAlpha = twinkle * (0.25 + s.layer * 0.25);
+    ctx.globalAlpha = twinkle * (0.25 + s.layer * 0.25) * ZONES[zoneIdx].starA;
     ctx.fillStyle = 'hsl(' + ((s.hue + time * 0.02) % 360) + ', 90%, 70%)';
     ctx.fillRect(sx, sy, s.size, s.size);
   }
   ctx.globalAlpha = 1;
 
   // Faint horizontal grid lines that scroll with the world - strong fall cue
-  ctx.globalAlpha = 0.05;
-  ctx.strokeStyle = '#8899ff';
+  ctx.globalAlpha = zoneIdx === 0 ? 0.05 : 0.12;
+  ctx.strokeStyle = ZONES[zoneIdx].grid;
   ctx.lineWidth = 1;
   const gridGap = 120;
   const offset = ((-cameraY) % gridGap + gridGap) % gridGap;
@@ -1267,10 +1580,13 @@ function initGame() {
   worldGenBottom  = 800;
   tokenNeed       = 1;
   tokenWrongT     = 0;
+  zoneIdx = 0; zoneLap = 0; zoneFeel.grav = 1; zoneFeel.wind = 1;
+  warpFlash       = 0;
   resetTokens();
   addGround();
   generateUpTo(-H * 2);
   initPlayer();
+  GHOST.reset();
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1286,7 +1602,7 @@ function updatePhysics(dt, ms) {
   // Wind push - only while airborne, doubled under canopy
   if (!player.onGround) {
     const windMult = player.chute ? 2.2 : 1.0;
-    player.vx += wind.force * windMult * dt;
+    player.vx += wind.force * windMult * zoneFeel.wind * dt;
   }
 
   player.vx *= CFG.FRICTION;
@@ -1304,7 +1620,7 @@ function updatePhysics(dt, ms) {
     } else {
       grav = CFG.GRAVITY;
     }
-    player.vy += grav * dt;
+    player.vy += grav * zoneFeel.grav * dt;
 
     // Glider controls (active while deployed and hasGlider)
     if (player.chute && player.hasGlider) {
@@ -1314,6 +1630,7 @@ function updatePhysics(dt, ms) {
         player.gliderTime = 0;
         player.hasGlider = false;
         showBanner('GLIDER SPENT');
+        audio.triggers.spent();
       }
     }
     if (player.chute && player.hasGlider) {
@@ -1352,6 +1669,21 @@ function updatePhysics(dt, ms) {
     audio.triggers.jump();
   }
 
+  // Long fall: warp straight to the ground so a new climb starts fast
+  if (!player.onGround && player.vy > 0 && player.rocketTimer <= 0 && player.y < -300) {
+    player.dropT = (player.dropT || 0) + ms;
+    if (player.dropT > FALL_WARP_MS) {
+      player.dropT = 0;
+      warpFlash = 1;
+      audio.triggers.warp();
+      showBanner('⬇ BACK TO THE GROUND');
+      respawnFromY();
+      return;
+    }
+  } else {
+    player.dropT = 0;
+  }
+
   // Coyote countdown
   if (!player.onGround) {
     player.coyoteTimer -= ms;
@@ -1365,6 +1697,26 @@ function updatePhysics(dt, ms) {
   // Facing
   if (player.vx >  0.1) player.facing =  1;
   if (player.vx < -0.1) player.facing = -1;
+
+  // Solid blocks: bonk your head instead of passing through (rockets punch through)
+  if (player.vy < 0 && player.rocketTimer <= 0) {
+    const prevTop = player.y - player.vy * dt;
+    for (const p of platforms) {
+      if (!p.solid) continue;
+      if (player.x + player.w <= p.x + 2 || player.x >= p.x + p.w - 2) continue;
+      const bottom = p.y + p.h;
+      if (prevTop >= bottom - 1 && player.y < bottom) {
+        player.y = bottom;
+        player.vy = 1;
+        audio.triggers.bonk();
+        for (let i = 0; i < 6; i++) particles.push({
+          x: player.x + player.w / 2, y: bottom, vx: (Math.random() - 0.5) * 4, vy: Math.random() * 2,
+          life: 1, decay: 0.05, size: 1.5 + Math.random() * 1.5, hue: 210, type: 'splash',
+        });
+        break;
+      }
+    }
+  }
 
   // Horizontal wrap
   if (player.x + player.w < 0)  player.x = W;
@@ -1384,6 +1736,7 @@ function updatePhysics(dt, ms) {
     ) {
       // Landing splash + cloud in this platform's color (only on real impact)
       if (!player.onGround && player.vy > 2) {
+        audio.triggers.land(player.vy);
         spawnSplash(player.x + player.w / 2, p.y, p.hue !== undefined ? p.hue : 230);
         // Extra ring of sparks proportional to impact speed
         const extra = Math.min(Math.floor(player.vy * 2), 20);
@@ -1458,6 +1811,9 @@ function updatePhysics(dt, ms) {
     }
   }
 
+  updateZone();
+  GHOST.record(ms);
+
   // ── Generate more world ahead ────────────────────────────
   // Keep platforms generated at least one screen above the camera top
   generateUpTo(cameraY - H);
@@ -1483,6 +1839,8 @@ function render(time) {
 
   if (state === STATE.MENU) { drawMenu(); return; }
   if (state === STATE.DEAD)  { drawDead(); return; }
+
+  drawZoneSky();
 
   // Sky tint shifts toward dawn-blue inside the cloud zone
   const cf = cloudFactor();
@@ -1514,6 +1872,8 @@ function render(time) {
       ctx.fillRect(p.x, p.y, p.w, 2);
       continue;
     }
+
+    if (p.solid) { drawSolid(p, time); continue; }
 
     // Slow hue drift + breathing glow
     const hue = ((p.hue !== undefined ? p.hue : 230) + time * 0.01) % 360;
@@ -1554,6 +1914,8 @@ function render(time) {
       ctx.globalAlpha = 1;
     }
   }
+
+  GHOST.draw(time);
 
   // Player comet trail (world space, under everything else)
   drawTrail();
@@ -1609,15 +1971,27 @@ function render(time) {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(player.x - 2, player.y - 2, player.w + 4, player.h + 4);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = CFG.PLAYER;
+    ctx.fillStyle = ZONES[zoneIdx].player;
     ctx.fillRect(player.x, player.y, player.w, player.h);
   }
 
   ctx.restore();
 
+  if (warpFlash > 0) {
+    ctx.globalAlpha = warpFlash;
+    ctx.fillStyle = '#bfe0ff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+    warpFlash = Math.max(0, warpFlash - 0.04);
+  }
+  ctx.shadowColor = 'rgba(0,0,0,0.75)';
+  ctx.shadowBlur = 3;
   drawHUD();
+  GHOST.hud();
   drawTokenArrow(time);
   drawBanner();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = 'transparent';
   drawTouchHints();
 }
 
@@ -1761,7 +2135,7 @@ function drawMenu() {
   ctx.fillText('ASCEND', W / 2, H / 2 - 30);
   ctx.fillStyle = '#6fb0ff';
   ctx.font = 'bold 12px monospace';
-  ctx.fillText(mode === 'challenge' ? 'CHALLENGE MODE' : 'CLIMB MODE', W / 2, H / 2 - 54);
+  ctx.fillText(mode === 'challenge' ? 'CHALLENGE MODE' : 'MARATHON MODE', W / 2, H / 2 - 54);
 
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '13px monospace';
@@ -1914,11 +2288,11 @@ const LB = {
     localStorage.setItem('ascendMode', m);
     this.el('modeClimb').className = m === 'climb' ? 'on' : '';
     this.el('modeChallenge').className = m === 'challenge' ? 'on' : '';
-    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : 'CLIMB') + ' LEADERBOARD';
+    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : 'MARATHON') + ' LEADERBOARD';
   },
   queue() {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.post(), 4000);
+    this.timer = setTimeout(() => { GHOST.save(); this.post(); }, 4000);
   },
   show() {
     this.open = true;
@@ -1939,9 +2313,22 @@ const LB = {
     this.posted = sameName ? n : 0;
     this.postedC = sameName ? parseInt(localStorage.getItem('ascendPostedC') || '0') : 0;
     this.setMode(mode);
+    document.querySelectorAll('#lbOpts button').forEach(b => {
+      const k = b.dataset.opt;
+      b.className = SETTINGS[k] ? 'on' : '';
+      b.addEventListener('click', () => {
+        SETTINGS[k] = !SETTINGS[k];
+        saveSetting(k);
+        b.className = SETTINGS[k] ? 'on' : '';
+        SFX.unlock();
+        if (k === 'music') SETTINGS.music ? MUSIC.start() : MUSIC.stop();
+        if (k === 'buzz' && SETTINGS.buzz) buzz(40);
+      });
+    });
     ['modeClimb', 'modeChallenge'].forEach(id => this.el(id).addEventListener('click', e => {
       const m = e.currentTarget.dataset.mode;
       if (m === mode) return;
+      GHOST.save();
       this.setMode(m);
       state = STATE.MENU;
       initGame();
@@ -1966,7 +2353,10 @@ const LB = {
       if (best > 0 || bestChallenge > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
-    document.addEventListener('visibilitychange', () => { if (document.hidden) this.post(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { GHOST.save(); this.post(); MUSIC.stop(); }
+      else if (SFX.ac) MUSIC.start();
+    });
     this.post();
   },
 };
