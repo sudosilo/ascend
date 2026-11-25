@@ -1668,7 +1668,7 @@ const LB = {
   status(t) { this.el('lbStatus').textContent = t; },
   async findApi() {
     if (this.api) return this.api;
-    const srcs = ['ascend-api-v1.json', 'https://raw.githubusercontent.com/sudosilo/ascend/main/ascend-api-v1.json'];
+    const srcs = ['ascend-api-v1.json', 'https://raw.githubusercontent.com/sudosilo/ascend/master/ascend-api-v1.json'];
     for (const u of srcs) {
       try {
         const r = await fetch(u, { cache: 'no-store' });
