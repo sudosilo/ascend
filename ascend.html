@@ -9,7 +9,14 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.8 - NO MORE BLANK SKY, RESULT SCREENS    ║
+║  CURRENT BUILD : v1.9 - SIDE SCROLL MARATHON                 ║
+║  v1.9: SIDE SCROLL mode (SIDE object). Run right forever on  ║
+║        the climb physics. Terrain generates ahead: flats,    ║
+║        slopes, steps, gaps, bridges, clearings, and jump     ║
+║        challenges (stones, steel pillars, stairs, drops,     ║
+║        elevators, movers). Falling into the abyss drops you  ║
+║        from the sky above that spot, no dying. Score is the  ║
+║        farthest distance, own leaderboard (mode side).       ║
 ║  v1.8: fixed the Cloud Kingdom crash (snowflake radius went  ║
 ║        negative and killed the render, leaving a blank sky). ║
 ║        Loop is now crash proof. Zones extended with NORTHERN ║
@@ -205,6 +212,7 @@
     <button id="modeCareer" data-mode="career">CAREER</button>
     <button id="modeGauntlet" data-mode="gauntlet">GAUNTLET</button>
     <button id="modeJewels" data-mode="jewels">JEWELS</button>
+    <button id="modeSide" data-mode="side">SIDE SCROLL</button>
   </div>
   <label>CAREER LEVEL</label>
   <div id="lbLevel">
@@ -746,7 +754,7 @@ const GHOST = {
     this.recT += ms;
     if (this.recT >= 100 && this.rec.length < 18000) {
       this.recT = 0;
-      this.rec.push(+(player.x / W).toFixed(3), Math.round(player.y));
+      this.rec.push(mode === 'side' ? Math.round(player.x) : +(player.x / W).toFixed(3), Math.round(player.y));
     }
     if (this.metric() > this.playBest) this.dirty = true;
   },
@@ -763,8 +771,9 @@ const GHOST = {
   pos() {
     if (!this.play || !SETTINGS.ghost) return null;
     const i = Math.floor(this.runT / 100) * 2;
-    if (i + 1 >= this.play.length) return { x: this.play[this.play.length - 2] * W, y: this.play[this.play.length - 1], done: true };
-    return { x: this.play[i] * W, y: this.play[i + 1] };
+    const sx = mode === 'side' ? 1 : W;
+    if (i + 1 >= this.play.length) return { x: this.play[this.play.length - 2] * sx, y: this.play[this.play.length - 1], done: true };
+    return { x: this.play[i] * sx, y: this.play[i + 1] };
   },
   draw(time) {
     const g = this.pos();
@@ -783,7 +792,7 @@ const GHOST = {
   hud() {
     const g = this.pos();
     if (!g) return;
-    const d = Math.round((g.y - player.y) / 10);
+    const d = mode === 'side' ? Math.round((player.x - g.x) / SIDE.UNIT) : Math.round((g.y - player.y) / 10);
     ctx.textAlign = 'left';
     ctx.font = 'bold 12px monospace';
     ctx.fillStyle = d >= 0 ? '#3dff9b' : '#ff6688';
@@ -826,7 +835,7 @@ function initPlayer() {
 // ════════════════════════════════════════════════════════════
 //  SCORE
 // ════════════════════════════════════════════════════════════
-let mode = ['challenge', 'career', 'gauntlet', 'jewels'].includes(localStorage.getItem('ascendMode')) ? localStorage.getItem('ascendMode') : 'climb';
+let mode = ['challenge', 'career', 'gauntlet', 'jewels', 'side'].includes(localStorage.getItem('ascendMode')) ? localStorage.getItem('ascendMode') : 'climb';
 let bestChallenge = parseInt(localStorage.getItem('bestChallenge') || '0');
 let bestGauntlet  = parseInt(localStorage.getItem('bestGauntlet') || '0');
 let bestJewels    = parseInt(localStorage.getItem('bestJewels') || '0');
@@ -2412,6 +2421,690 @@ function drawStarfield(time) {
 }
 
 // ════════════════════════════════════════════════════════════
+//  SIDE SCROLL MARATHON - run sideways forever on Ascend physics
+//  Terrain is generated ahead as you go: flats, slopes, ledges,
+//  steps, gaps, bridges, clearings and jump challenges. Fall into
+//  the abyss and you drop back out of the sky above that spot.
+//  Nobody dies. Score is the farthest distance reached.
+// ════════════════════════════════════════════════════════════
+let bestSide = parseInt(localStorage.getItem('bestSide') || '0');
+
+const SIDE = {
+  DEEP: 2600,      // ground blocks reach this far down
+  STEP: 16,        // ledge height you walk up without jumping
+  ABYSS: 420,      // abyss line sits this far below the nearby ground
+  UNIT: 25,        // world px per meter of distance
+  VIEW: 720,       // world px across the screen on a phone
+  terrain: [], gems: [], lane: [], deco: [],
+  genX: 0, genY: 0, last: '', camX: 0, camY: 0, S: 1, vw: 0, vh: 0, t: 0,
+  falls: 0, gemCount: 0, dropping: false, zi: 0, zl: 0, minX: -300, standOn: null,
+
+  view() {
+    this.S = Math.max(0.5, Math.min(1.2, W / this.VIEW));
+    this.vw = W / this.S;
+    this.vh = H / this.S;
+  },
+
+  init() {
+    this.view();
+    this.terrain = []; this.gems = []; this.lane = []; this.deco = [];
+    this.genX = 0; this.genY = 0; this.last = ''; this.t = 0;
+    this.falls = 0; this.gemCount = 0; this.dropping = false; this.standOn = null;
+    this.minX = -300;
+    const z = zoneAt(0); this.zi = z.i; this.zl = z.lap;
+    // back wall at the start line
+    this.terrain.push({ k: 'block', x: -300, y: -3000, w: 300, h: 3000 + this.DEEP, wall: true });
+    this.flat(900, true);
+    player.x = 160;
+    player.y = -player.h;
+    player.onGround = true;
+    this.camX = player.x - this.vw * 0.3;
+    this.camY = player.y - this.vh * 0.55;
+    this.generate();
+  },
+
+  // ── building blocks ──────────────────────────────────────
+  lanePt(x, y) { this.lane.push({ x, y }); },
+  block(x, y, w, o) {
+    const b = Object.assign({ k: 'block', x, y, w, h: this.DEEP, hue: Math.floor(Math.random() * 360) }, o || {});
+    this.terrain.push(b);
+    this.lanePt(x, y); this.lanePt(x + w, y);
+    return b;
+  },
+  slopeSeg(x0, y0, x1, y1) {
+    this.terrain.push({ k: 'slope', x0, y0, x1, y1, x: x0, w: x1 - x0, hue: Math.floor(Math.random() * 360) });
+    this.lanePt(x0, y0); this.lanePt(x1, y1);
+  },
+  plat(x, y, w, o) {
+    const p = Object.assign({ k: 'plat', x, y, w, h: CFG.PLAT_H, bx: x, by: y, ax: 0, ay: 0, sp: 0, ph: Math.random() * 6.28, dx: 0, dy: 0, hue: Math.floor(Math.random() * 360) }, o || {});
+    this.terrain.push(p);
+    this.lanePt(x, y + Math.abs(p.ay)); this.lanePt(x + w + Math.abs(p.ax), y + Math.abs(p.ay));
+    return p;
+  },
+  gem(x, y) { this.gems.push({ x, y, ph: Math.random() * 6.28 }); },
+  gemArc(x0, x1, y, lift, n) {
+    for (let i = 0; i < n; i++) {
+      const f = n === 1 ? 0.5 : i / (n - 1);
+      this.gem(x0 + (x1 - x0) * f, y - Math.sin(f * Math.PI) * lift);
+    }
+  },
+  diff() { return Math.min(1, Math.max(0, (this.genX - 2500) / 40000)); },
+  bias(dy) {
+    if (this.genY < -1600) return Math.abs(dy);
+    if (this.genY > 500) return -Math.abs(dy);
+    return dy;
+  },
+
+  // ── segments ─────────────────────────────────────────────
+  flat(len, quiet) {
+    this.block(this.genX, this.genY, len);
+    if (!quiet) {
+      if (Math.random() < 0.45) {
+        const n = Math.min(6, Math.floor(len / 50));
+        for (let i = 0; i < n; i++) this.gem(this.genX + 40 + i * 40, this.genY - 30);
+      }
+      if (len > 280 && Math.random() < 0.35) {
+        const lx = this.genX + len * 0.25, ly = this.genY - rand(120, 180);
+        this.plat(lx, ly, 100);
+        this.gemArc(lx + 10, lx + 90, ly - 26, 0, 3);
+      }
+      if (Math.random() < 0.3) this.deco.push({ k: 'tree', x: this.genX + rand(30, len - 30), y: this.genY, s: rand(0.7, 1.3), hue: Math.floor(rand(190, 230)) });
+    }
+    this.genX += len;
+  },
+  slope() {
+    const len = rand(220, 520);
+    const rise = this.bias(rand(-len * 0.5, len * 0.5));
+    this.slopeSeg(this.genX, this.genY, this.genX + len, this.genY + rise);
+    if (Math.random() < 0.4) this.gemArc(this.genX + 40, this.genX + len - 40, this.genY + rise / 2 - 40, 0, 4);
+    this.genX += len;
+    this.genY += rise;
+    this.flat(rand(60, 140), true);
+  },
+  step() {
+    const d = this.diff();
+    const dy = rand(50, 110 + 40 * d);
+    this.genY += this.bias(Math.random() < 0.55 ? -dy : dy);
+    this.flat(rand(160, 320));
+  },
+  gap() {
+    const d = this.diff();
+    const w = rand(80, 150 + 230 * d);
+    const dy = this.bias(rand(-100, 80));
+    this.gemArc(this.genX + 10, this.genX + w - 10, this.genY - 40, 90, 5);
+    this.genX += w;
+    this.genY += dy;
+    this.flat(rand(160, 300));
+  },
+  bridge() {
+    const d = this.diff();
+    const span = rand(260, 460 + 220 * d);
+    const x0 = this.genX, x1 = this.genX + span, y = this.genY;
+    this.deco.push({ k: 'post', x: x0, y }, { k: 'post', x: x1, y }, { k: 'rope', x0, x1, y });
+    if (d < 0.2 || Math.random() < 0.5) {
+      this.plat(x0, y, span, { bridge: true });
+    } else {
+      let x = x0;
+      while (x < x1) {
+        const pw = Math.min(rand(50, 120), x1 - x);
+        if (pw > 12) this.plat(x, y, pw, { bridge: true });
+        x += pw + rand(30, 50 + 40 * d);
+      }
+    }
+    this.gemArc(x0 + 30, x1 - 30, y - 30, 0, Math.max(3, Math.floor(span / 70)));
+    this.genX = x1;
+    this.flat(rand(160, 260));
+  },
+  clearing() {
+    const len = rand(600, 950);
+    const x0 = this.genX, y = this.genY;
+    this.block(x0, y, len);
+    this.gemArc(x0 + 80, x0 + len * 0.45, y - 30, 110, 6);
+    this.gemArc(x0 + len * 0.55, x0 + len - 80, y - 30, 110, 6);
+    const lx = x0 + len * 0.4, ly = y - rand(170, 210);
+    this.plat(lx, ly, 120);
+    this.gemArc(lx + 10, lx + 110, ly - 28, 0, 4);
+    for (let i = 0; i < 4; i++) this.deco.push({ k: 'tree', x: x0 + rand(40, len - 40), y, s: rand(0.8, 1.5), hue: Math.floor(rand(190, 230)) });
+    this.genX += len;
+  },
+  land(x, y) {
+    this.genX = x + rand(90, 150);
+    this.genY = y + this.bias(rand(-40, 60));
+    this.flat(rand(220, 360));
+  },
+  challenge() {
+    const d = this.diff();
+    const kinds = [['stones', 3], ['pillars', 2], ['stairs', 1.5], ['drop', 1], ['elevator', d > 0.1 ? 1.2 : 0], ['movers', d > 0.08 ? 1.5 : 0]];
+    let r = Math.random() * kinds.reduce((a, k) => a + k[1], 0), kind = 'stones';
+    for (const [k, wgt] of kinds) { r -= wgt; if (r <= 0) { kind = k; break; } }
+    let x = this.genX, y = this.genY;
+    const yTop = this.genY - 420, yBot = this.genY + 220;
+    if (kind === 'stones') {
+      const n = 3 + Math.floor(rand(0, 2 + 4 * d));
+      for (let i = 0; i < n; i++) {
+        const px = x + rand(90, 150 + 90 * d);
+        const w = rand(Math.max(40, 100 - 50 * d), 120 - 40 * d);
+        y = Math.max(yTop, Math.min(yBot, y + rand(-110, 80)));
+        const mover = Math.random() < 0.12 + 0.35 * d;
+        this.plat(px, y, w, mover ? { ax: rand(30, 70), sp: rand(0.0015, 0.003) } : {});
+        this.gem(px + w / 2, y - 34);
+        x = px + w + (mover ? 70 : 0);
+      }
+      this.land(x, y);
+    } else if (kind === 'pillars') {
+      const n = 3 + Math.floor(rand(0, 3 + 2 * d));
+      for (let i = 0; i < n; i++) {
+        const px = x + rand(70, 130 + 70 * d);
+        const w = rand(Math.max(34, 70 - 30 * d), 90);
+        y = Math.max(yTop, Math.min(yBot, y + rand(-120, 100)));
+        this.block(px, y, w, { steel: true });
+        this.gem(px + w / 2, y - 34);
+        x = px + w;
+      }
+      this.land(x, y);
+    } else if (kind === 'stairs') {
+      const n = 3 + Math.floor(rand(0, 3));
+      for (let i = 0; i < n; i++) {
+        const px = x + rand(40, 110 + 40 * d);
+        const w = rand(90, 150);
+        y = Math.max(yTop, y - rand(80, 140));
+        this.block(px, y, w);
+        this.gem(px + w / 2, y - 34);
+        x = px + w;
+      }
+      this.genX = x; this.genY = y;
+      this.flat(rand(220, 360));
+    } else if (kind === 'drop') {
+      const n = 3 + Math.floor(rand(0, 3));
+      for (let i = 0; i < n; i++) {
+        const px = x + rand(60, 140);
+        const w = rand(80, 130);
+        y = Math.min(yBot + 200, y + rand(90, 170));
+        this.plat(px, y, w);
+        this.gem(px + w / 2, y - 34);
+        x = px + w;
+      }
+      this.land(x, y);
+    } else if (kind === 'elevator') {
+      const gapW = rand(260, 380), high = rand(220, 380);
+      const px = x + gapW / 2 - 40;
+      this.plat(px, y - high / 2, 80, { ay: high / 2 + 12, sp: 0.0012, lift: true });
+      for (let i = 0; i < 4; i++) this.gem(px + 40, y - 40 - i * (high / 4));
+      this.genX = x + gapW;
+      this.genY = y - high;
+      this.flat(rand(220, 320));
+    } else {
+      const span = rand(380, 600), n = span > 480 ? 2 : 1;
+      for (let i = 0; i < n; i++) {
+        const cx = x + span * (i + 1) / (n + 1);
+        const amp = span / (n + 1) / 2 - 20;
+        this.plat(cx - 45, y + rand(-40, 20), 90, { ax: amp, sp: rand(0.0012, 0.002) });
+        this.gem(cx, y - 70);
+      }
+      this.genX = x + span;
+      this.genY = y + this.bias(rand(-50, 50));
+      this.flat(rand(220, 360));
+    }
+  },
+  nextSegment() {
+    const d = this.diff();
+    const early = this.genX < 2500;
+    const opts = [
+      ['flat', 1.5], ['slope', 3], ['step', 2], ['gap', 1.6 + d], ['bridge', early ? 0 : 1],
+      ['clearing', early ? 0 : 0.5], ['challenge', early || this.last === 'challenge' ? 0 : 0.8 + 2.2 * d],
+    ];
+    let r = Math.random() * opts.reduce((a, o) => a + o[1], 0), pick = 'flat';
+    for (const [k, wgt] of opts) { r -= wgt; if (r <= 0) { pick = k; break; } }
+    if (pick === 'flat') this.flat(rand(200, 420));
+    else this[pick]();
+    this.last = pick;
+  },
+  generate() {
+    while (this.genX < this.camX + this.vw * 2.5) this.nextSegment();
+  },
+  cull() {
+    const cut = this.camX - this.vw * 1.5;
+    if (cut - 40 > this.minX) this.minX = cut + 40;
+    this.terrain = this.terrain.filter(p => p.x + p.w + Math.abs(p.ax || 0) > cut);
+    this.lane = this.lane.filter(p => p.x > cut - 800);
+    this.gems = this.gems.filter(g => !g.taken && g.x > cut);
+    this.deco = this.deco.filter(o => (o.x1 || o.x) > cut);
+  },
+  abyssAt(x) {
+    let m = -Infinity;
+    for (const p of this.lane) if (p.x > x - 700 && p.x < x + 700 && p.y > m) m = p.y;
+    if (m === -Infinity) m = this.genY;
+    return m + this.ABYSS;
+  },
+
+  // ── physics: same numbers as the climb ────────────────────
+  update(dt, ms) {
+    this.view();
+    const inp = getInput();
+    const P = player;
+    this.t += ms;
+
+    P.vx += (inp.right ? CFG.PLAYER_SPEED : 0) - (inp.left ? CFG.PLAYER_SPEED : 0);
+    P.vx *= CFG.FRICTION;
+    if (Math.abs(P.vx) < 0.05) P.vx = 0;
+
+    let grav;
+    if (P.chute) grav = CFG.CHUTE_GRAVITY;
+    else if (inp.jump && P.vy < 0 && P.vy > -4) grav = CFG.BUBBLE_GRAV;
+    else grav = CFG.GRAVITY;
+    P.vy += grav * dt;
+    const maxFall = P.chute ? CFG.CHUTE_MAX_FALL : CFG.MAX_FALL;
+    if (P.vy > maxFall) P.vy = maxFall;
+
+    if (inp.jumpPressed && (P.onGround || P.coyoteTimer > 0)) {
+      P.vy = CFG.JUMP_FORCE;
+      P.onGround = false;
+      P.coyoteTimer = 0;
+      P.chute = false;
+      P.fallTimer = 0;
+      this.standOn = null;
+      spawnJumpPuff(P.x + P.w / 2, P.y + P.h);
+      audio.triggers.jump();
+    }
+    if (!P.onGround) P.coyoteTimer = Math.max(0, P.coyoteTimer - ms);
+
+    // moving platforms, carrying whoever stands on them
+    for (const p of this.terrain) {
+      if (p.k !== 'plat' || !p.sp) continue;
+      const s = Math.sin(this.t * p.sp + p.ph);
+      const nx = p.bx + s * p.ax, ny = p.by + s * p.ay;
+      p.dx = nx - p.x; p.dy = ny - p.y;
+      p.x = nx; p.y = ny;
+      if (this.standOn === p && P.onGround) { P.x += p.dx; P.y += p.dy; }
+    }
+
+    const wasOnGround = P.onGround;
+    const prevFeet = P.y + P.h;
+
+    // horizontal move against solid ground and steel
+    P.x += P.vx * dt;
+    if (P.x < this.minX) { P.x = this.minX; P.vx = 0; }
+    for (const b of this.terrain) {
+      if (b.k !== 'block') continue;
+      if (P.x + P.w <= b.x || P.x >= b.x + b.w || P.y + P.h <= b.y || P.y >= b.y + b.h) continue;
+      const pen = P.y + P.h - b.y;
+      if (pen <= this.STEP && P.vy >= 0 && !b.wall) { P.y = b.y - P.h; continue; }
+      if (P.x + P.w / 2 < b.x + b.w / 2) P.x = b.x - P.w; else P.x = b.x + b.w;
+      P.vx = 0;
+    }
+
+    // vertical move
+    P.y += P.vy * dt;
+    P.onGround = false;
+    this.standOn = null;
+    let landedHue = null;
+    const cx = P.x + P.w / 2;
+    for (const s of this.terrain) {
+      if (s.k !== 'slope' || cx < s.x0 || cx > s.x1 || P.vy < 0) continue;
+      const g = (s.y1 - s.y0) / (s.x1 - s.x0);
+      const sy = s.y0 + g * (cx - s.x0);
+      const feet = P.y + P.h;
+      const reach = Math.abs(P.vx * g) * dt;
+      const up = wasOnGround ? 8 + reach : 0;
+      if (feet >= sy - up && feet <= sy + 18 + P.vy * dt + reach) {
+        P.y = sy - P.h;
+        if (!wasOnGround) landedHue = s.hue;
+        P.onGround = true;
+      }
+    }
+    for (const b of this.terrain) {
+      if (b.k !== 'block') continue;
+      if (P.x + P.w <= b.x || P.x >= b.x + b.w || P.y + P.h <= b.y || P.y >= b.y + b.h) continue;
+      if (P.vy >= 0) {
+        P.y = b.y - P.h;
+        if (!wasOnGround) landedHue = b.steel ? 215 : b.hue;
+        P.onGround = true;
+      } else {
+        P.y = b.y + b.h;
+        P.vy = 1;
+        audio.triggers.bonk();
+      }
+    }
+    for (const p of this.terrain) {
+      if (p.k !== 'plat' || P.vy < 0) continue;
+      if (P.x + P.w <= p.x || P.x >= p.x + p.w) continue;
+      const feet = P.y + P.h;
+      if (feet >= p.y && prevFeet <= p.y + 4 + Math.abs(p.dy) + Math.max(0, -p.dy)) {
+        P.y = p.y - P.h;
+        if (!wasOnGround) landedHue = p.bridge ? 30 : p.hue;
+        P.onGround = true;
+        this.standOn = p;
+      }
+    }
+    if (P.onGround) {
+      if (landedHue !== null && P.vy > 2) {
+        audio.triggers.land(P.vy);
+        spawnSplash(cx, P.y + P.h, landedHue);
+      }
+      P.vy = 0;
+      P.fallTimer = 0;
+      if (P.chute) { P.chute = false; audio.triggers.chuteClose(); }
+      this.dropping = false;
+    }
+    if (wasOnGround && !P.onGround && P.vy >= 0) P.coyoteTimer = CFG.COYOTE_MS;
+    if (P.vx > 0.1) P.facing = 1;
+    if (P.vx < -0.1) P.facing = -1;
+
+    // parachute, same rule as the climb
+    if (!P.onGround && P.vy > 0) {
+      P.fallTimer += ms / 1000;
+      if (!P.chute && P.fallTimer >= CFG.CHUTE_DEPLOY_S) { P.chute = true; audio.triggers.chuteOpen(); }
+    }
+
+    // abyss: drop back out of the sky above this spot
+    const abyss = this.abyssAt(cx);
+    if (P.y > abyss) {
+      this.falls++;
+      this.dropping = true;
+      this.camY = abyss + 40 - this.vh;
+      P.y = this.camY - P.h - 10;
+      P.vy = 2;
+      P.vx *= 0.3;
+      P.chute = false;
+      P.fallTimer = 0;
+      warpFlash = 0.8;
+      audio.triggers.warp();
+      showBanner('CATCH THE LEDGE');
+    }
+
+    // distance score
+    const m = Math.floor(P.x / this.UNIT);
+    if (m > score) {
+      score = m;
+      if (score > bestSide) {
+        bestSide = score;
+        localStorage.setItem('bestSide', bestSide);
+        LB.queue();
+      }
+    }
+    const z = zoneAt(score);
+    if (z.i !== this.zi || z.lap !== this.zl) {
+      this.zi = z.i; this.zl = z.lap;
+      showBanner('ZONE ' + (z.lap * ZONES.length + z.i + 1) + ' ' + ZONES[z.i].name);
+      audio.triggers.zone();
+    }
+
+    // gems
+    const pcy = P.y + P.h / 2;
+    for (const g of this.gems) {
+      if (g.taken) continue;
+      const dx = cx - g.x, dy = pcy - g.y;
+      if (dx * dx + dy * dy < 22 * 22) {
+        g.taken = true;
+        this.gemCount++;
+        audio.triggers.gem();
+        for (let i = 0; i < 10; i++) {
+          const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 3.5;
+          particles.push({ x: g.x, y: g.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, decay: 0.035, size: 2 + Math.random() * 2, hue: 200 + Math.random() * 40, type: 'splash' });
+        }
+      }
+    }
+
+    // camera: leads to the right, never shows below the abyss
+    const k = Math.min(1, 0.2 * dt), kv = Math.min(1, 0.12 * dt);
+    this.camX += (P.x - this.vw * 0.3 - this.camX) * k;
+    const floor = abyss + 40 - this.vh;
+    const ty = this.dropping ? floor : Math.min(P.y - this.vh * 0.55, floor);
+    this.camY += (ty - this.camY) * kv;
+
+    this.generate();
+    this.cull();
+    GHOST.record(ms);
+  },
+
+  // ── drawing ──────────────────────────────────────────────
+  sky() {
+    const lap = Math.floor(score / ZONE_CYCLE), r = score - lap * ZONE_CYCLE;
+    let i = 0;
+    for (let q = 0; q < ZONES.length; q++) if (r >= ZONES[q].at) i = q;
+    const nextAt = i + 1 < ZONES.length ? ZONES[i + 1].at : ZONE_CYCLE;
+    const j = (i + 1) % ZONES.length;
+    const t = Math.max(0, Math.min(1, (r - (nextAt - 80)) / 80));
+    return { top: mixHex(ZONES[i].top, ZONES[j].top, t), bot: mixHex(ZONES[i].bot, ZONES[j].bot, t), Z: ZONES[i] };
+  },
+  render(time) {
+    const z = this.sky();
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, z.top); g.addColorStop(1, z.bot);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // stars in the dark zones
+    if (z.Z.starA > 0.5) {
+      ctx.fillStyle = '#cfe0ff';
+      for (let i = 0; i < 60; i++) {
+        const sx = ((i * 97.3 - this.camX * 0.05 * this.S) % W + W) % W;
+        const sy = (i * 53.7) % (H * 0.7);
+        ctx.globalAlpha = 0.3 + 0.5 * Math.abs(Math.sin(time * 0.002 + i));
+        ctx.fillRect(sx, sy, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // two parallax hill layers in blue
+    [[0.15, 0.62, 0.18, 70], [0.35, 0.74, 0.28, 50]].forEach(([par, base, alpha, amp]) => {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#3d8bff';
+      ctx.beginPath();
+      ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 10) {
+        const wx = x + this.camX * par * this.S;
+        ctx.lineTo(x, H * base + Math.sin(wx * 0.006) * amp + Math.sin(wx * 0.017) * amp * 0.35);
+      }
+      ctx.lineTo(W, H);
+      ctx.closePath();
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.save();
+    ctx.scale(this.S, this.S);
+    ctx.translate(-this.camX, -this.camY);
+    const x0 = this.camX - 30, x1 = this.camX + this.vw + 30, yB = this.camY + this.vh + 20;
+
+    // decorations behind
+    for (const o of this.deco) {
+      if ((o.x1 || o.x) < x0 || (o.x0 || o.x) > x1) continue;
+      if (o.k === 'tree') {
+        const s = o.s;
+        ctx.fillStyle = '#2b3a66';
+        ctx.fillRect(o.x - 3 * s, o.y - 34 * s, 6 * s, 34 * s);
+        ctx.fillStyle = 'hsl(' + o.hue + ', 70%, 45%)';
+        ctx.beginPath();
+        ctx.moveTo(o.x, o.y - 80 * s); ctx.lineTo(o.x + 22 * s, o.y - 30 * s); ctx.lineTo(o.x - 22 * s, o.y - 30 * s);
+        ctx.closePath(); ctx.fill();
+      } else if (o.k === 'post') {
+        ctx.fillStyle = '#5a4128';
+        ctx.fillRect(o.x - 4, o.y - 40, 8, 40);
+        ctx.fillStyle = '#3d8bff';
+        ctx.fillRect(o.x - 5, o.y - 44, 10, 5);
+      } else if (o.k === 'rope') {
+        ctx.strokeStyle = '#3d8bff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(o.x0, o.y - 40);
+        ctx.quadraticCurveTo((o.x0 + o.x1) / 2, o.y - 10, o.x1, o.y - 40);
+        ctx.stroke();
+      }
+    }
+
+    // terrain
+    for (const p of this.terrain) {
+      if (p.x + p.w + Math.abs(p.ax || 0) < x0 || p.x > x1) continue;
+      const hue = ((p.hue || 0) + time * 0.01) % 360;
+      if (p.k === 'block') {
+        if (p.y > yB) continue;
+        const bot = Math.min(p.y + p.h, yB);
+        if (p.steel) {
+          ctx.fillStyle = '#5b6b8c';
+          ctx.fillRect(p.x, p.y, p.w, bot - p.y);
+          ctx.save();
+          ctx.beginPath(); ctx.rect(p.x, p.y, p.w, Math.min(bot - p.y, 900)); ctx.clip();
+          ctx.fillStyle = '#3d8bff';
+          for (let sy = p.y; sy < Math.min(bot, p.y + 900); sy += 26) {
+            ctx.beginPath();
+            ctx.moveTo(p.x, sy + 10); ctx.lineTo(p.x + p.w, sy - 4); ctx.lineTo(p.x + p.w, sy + 4); ctx.lineTo(p.x, sy + 18);
+            ctx.closePath(); ctx.fill();
+          }
+          ctx.restore();
+          ctx.fillStyle = '#d7e3ff';
+          ctx.fillRect(p.x, p.y, p.w, 3);
+          ctx.strokeStyle = '#1b2440'; ctx.lineWidth = 2;
+          ctx.strokeRect(p.x + 1, p.y + 1, p.w - 2, Math.min(bot - p.y, 900) - 2);
+          continue;
+        }
+        const gg = ctx.createLinearGradient(0, p.y, 0, p.y + 420);
+        gg.addColorStop(0, '#2b3a66'); gg.addColorStop(1, '#0d1222');
+        ctx.fillStyle = gg;
+        ctx.fillRect(p.x, p.y, p.w, bot - p.y);
+        this.edge(p.x, p.y, p.x + p.w, p.y, hue, time);
+      } else if (p.k === 'slope') {
+        const gg = ctx.createLinearGradient(0, Math.min(p.y0, p.y1), 0, Math.min(p.y0, p.y1) + 420);
+        gg.addColorStop(0, '#2b3a66'); gg.addColorStop(1, '#0d1222');
+        ctx.fillStyle = gg;
+        ctx.beginPath();
+        ctx.moveTo(p.x0, p.y0); ctx.lineTo(p.x1, p.y1); ctx.lineTo(p.x1, yB); ctx.lineTo(p.x0, yB);
+        ctx.closePath(); ctx.fill();
+        this.edge(p.x0, p.y0, p.x1, p.y1, hue, time);
+      } else if (p.bridge) {
+        ctx.fillStyle = '#8a6a48';
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillStyle = '#5a4128';
+        for (let bx = p.x + 12; bx < p.x + p.w; bx += 14) ctx.fillRect(bx, p.y, 2, p.h);
+        ctx.fillStyle = '#3d8bff';
+        ctx.fillRect(p.x, p.y + p.h - 2, p.w, 2);
+      } else {
+        const breathe = 0.2 + 0.18 * Math.abs(Math.sin(time * 0.002 + (p.hue || 0)));
+        ctx.globalAlpha = breathe;
+        ctx.fillStyle = 'hsl(' + hue + ', 100%, 55%)';
+        ctx.fillRect(p.x - 4, p.y - 3, p.w + 8, p.h + 8);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = 'hsl(' + hue + ', 35%, 18%)';
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillStyle = p.lift ? '#3d8bff' : 'hsl(' + hue + ', 100%, 62%)';
+        ctx.fillRect(p.x, p.y, p.w, 2);
+        if (p.sp) {
+          ctx.fillStyle = '#3d8bff';
+          ctx.fillRect(p.x + p.w / 2 - 6, p.y + p.h, 12, 3);
+        }
+      }
+    }
+
+    // gems
+    for (const gm of this.gems) {
+      if (gm.x < x0 || gm.x > x1) continue;
+      const y = gm.y + Math.sin(time * 0.003 + gm.ph) * 4;
+      const pulse = 0.7 + 0.3 * Math.abs(Math.sin(time * 0.006 + gm.ph));
+      ctx.globalAlpha = 0.35 * pulse;
+      ctx.fillStyle = '#6fb0ff';
+      ctx.beginPath(); ctx.arc(gm.x, y, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'hsl(215, 95%, ' + (50 + pulse * 20) + '%)';
+      ctx.beginPath();
+      ctx.moveTo(gm.x, y - 8); ctx.lineTo(gm.x + 6, y); ctx.lineTo(gm.x, y + 8); ctx.lineTo(gm.x - 6, y);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.moveTo(gm.x, y - 8); ctx.lineTo(gm.x + 3, y - 2); ctx.lineTo(gm.x - 3, y - 2);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // the abyss
+    const ay = this.abyssAt(this.camX + this.vw * 0.3);
+    const fog = ctx.createLinearGradient(0, ay - 260, 0, ay + 40);
+    fog.addColorStop(0, 'rgba(4,8,20,0)');
+    fog.addColorStop(1, 'rgba(4,8,20,0.95)');
+    ctx.fillStyle = fog;
+    ctx.fillRect(this.camX - 10, ay - 260, this.vw + 20, 300);
+    ctx.fillStyle = '#04060d';
+    ctx.fillRect(this.camX - 10, ay + 40, this.vw + 20, 2000);
+    ctx.fillStyle = '#3d8bff';
+    for (let i = 0; i < 24; i++) {
+      const gx = this.camX + ((i * 131 + time * 0.02 * (i % 3 + 1)) % (this.vw + 20));
+      ctx.globalAlpha = 0.2 + 0.4 * Math.abs(Math.sin(time * 0.003 + i));
+      ctx.fillRect(gx, ay + 10 - (i % 5) * 14, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    drawParticles();
+    GHOST.draw(time);
+    if (player.chute) drawParachute();
+
+    const P = player;
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(P.x - 2, P.y - 2, P.w + 4, P.h + 4);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = z.Z.player;
+    ctx.fillRect(P.x, P.y, P.w, P.h);
+    ctx.fillStyle = '#3d8bff';
+    ctx.fillRect(P.facing > 0 ? P.x + P.w - 5 : P.x + 2, P.y + 5, 3, 3);
+    ctx.restore();
+
+    if (warpFlash > 0) {
+      ctx.globalAlpha = warpFlash;
+      ctx.fillStyle = '#bfe0ff';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+      warpFlash = Math.max(0, warpFlash - 0.04);
+    }
+
+    ctx.shadowColor = 'rgba(0,0,0,0.75)';
+    ctx.shadowBlur = 3;
+    this.hud();
+    GHOST.hud();
+    drawBanner();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    drawTouchHints();
+  },
+  edge(ax, ay, bx, by, hue, time) {
+    ctx.strokeStyle = 'hsl(' + hue + ', 100%, 62%)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(ax, ay + 1); ctx.lineTo(bx, by + 1); ctx.stroke();
+    ctx.strokeStyle = '#3d8bff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ax, ay + 4); ctx.lineTo(bx, by + 4); ctx.stroke();
+    const len = Math.hypot(bx - ax, by - ay), n = Math.floor(len / 22);
+    for (let i = 0; i < n; i++) {
+      const f = (i + 0.5) / n;
+      ctx.globalAlpha = 0.3 + 0.7 * Math.abs(Math.sin(time * 0.003 + i * 0.7 + hue));
+      ctx.fillStyle = 'hsl(' + ((hue + i * 25) % 360) + ', 100%, 75%)';
+      ctx.fillRect(ax + (bx - ax) * f, ay + (by - ay) * f + 8, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+  },
+  hud() {
+    ctx.textAlign = 'right';
+    ctx.fillStyle = CFG.SCORE_COL;
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(score + 'm', W - 14, 28);
+    ctx.fillStyle = CFG.UI_DIM;
+    ctx.font = '11px monospace';
+    ctx.fillText('best ' + bestSide + 'm', W - 14, 46);
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('◆ ' + this.gemCount, W - 14, 66);
+    ctx.fillStyle = '#3d8bff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('falls ' + this.falls, W - 14, 84);
+    if (!player.onGround && !player.chute && player.vy > 0) {
+      const pct = Math.min(player.fallTimer / CFG.CHUTE_DEPLOY_S, 1);
+      ctx.fillStyle = '#222233';
+      ctx.fillRect(14, 14, 60, 6);
+      ctx.fillStyle = pct > 0.7 ? CFG.CHUTE : '#5566aa';
+      ctx.fillRect(14, 14, 60 * pct, 6);
+      ctx.fillStyle = CFG.UI_DIM;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('chute', 14, 31);
+    }
+  },
+};
+
+// ════════════════════════════════════════════════════════════
 //  INIT
 // ════════════════════════════════════════════════════════════
 function initGame() {
@@ -2445,6 +3138,7 @@ function initGame() {
   applyDifficulty();
   warpFlash       = 0;
   resetTokens();
+  if (mode === 'side') { initPlayer(); SIDE.init(); GHOST.reset(); return; }
   addGround();
   generateUpTo(-H * 2);
   initPlayer();
@@ -2704,6 +3398,7 @@ function render(time) {
   if (state === STATE.MENU) { drawMenu(); return; }
   if (state === STATE.DEAD)  { drawDead(); return; }
   if (state === STATE.RESULT) { drawResult(); return; }
+  if (mode === 'side') { SIDE.render(time); return; }
 
   drawZoneSky();
 
@@ -3086,18 +3781,18 @@ function drawMenu() {
   ctx.fillStyle = '#6fb0ff';
   ctx.font = 'bold 12px monospace';
   ctx.fillText(mode === 'gauntlet' ? 'RUN THE GAUNTLET' : mode === 'jewels' ? 'JEWELS MODE' : mode === 'career' ? 'CAREER  LEVEL ' + careerLevel + '  REACH ' + LEVEL_TARGET(careerLevel) + 'm'
-    : mode === 'challenge' ? 'CHALLENGE MODE' : 'MARATHON MODE', W / 2, H / 2 - 54);
+    : mode === 'challenge' ? 'CHALLENGE MODE' : mode === 'side' ? 'SIDE SCROLL MARATHON' : 'MARATHON MODE', W / 2, H / 2 - 54);
 
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '13px monospace';
-  ctx.fillText('climb as high as you can', W / 2, H / 2 + 2);
-  ctx.fillText('fall 2s → parachute deploys', W / 2, H / 2 + 22);
+  ctx.fillText(mode === 'side' ? 'run right as far as you can' : 'climb as high as you can', W / 2, H / 2 + 2);
+  ctx.fillText(mode === 'side' ? 'fall in the abyss, drop from the sky' : 'fall 2s → parachute deploys', W / 2, H / 2 + 22);
 
   ctx.fillStyle = CFG.ACCENT;
   ctx.font = 'bold 14px monospace';
   ctx.fillText('tap to start', W / 2, H / 2 + 56);
 
-  const menuBest = mode === 'challenge' ? bestChallenge : mode === 'career' ? careerCleared : mode === 'gauntlet' ? bestGauntlet : mode === 'jewels' ? bestJewels : best;
+  const menuBest = mode === 'challenge' ? bestChallenge : mode === 'career' ? careerCleared : mode === 'gauntlet' ? bestGauntlet : mode === 'jewels' ? bestJewels : mode === 'side' ? bestSide : best;
   if (menuBest > 0) {
     ctx.fillStyle = CFG.SCORE_COL;
     ctx.font = '11px monospace';
@@ -3202,7 +3897,11 @@ function tick(ts) {
   const dt = ms / 16.67;
   lastTs = ts;
 
-  if (state === STATE.PLAYING && !LB.open) {
+  if (state === STATE.PLAYING && !LB.open && mode === 'side') {
+    worldClock += ms;
+    SIDE.update(dt, ms);
+    updateParticles(dt);
+  } else if (state === STATE.PLAYING && !LB.open) {
     const wr = worldRate();
     worldClock += ms * wr;
     updatePhysics(dt, ms);
@@ -3233,7 +3932,7 @@ function tick(ts) {
 //  GLOBAL LEADERBOARD (ascend-backend on Railway)
 // ════════════════════════════════════════════════════════════
 const LB = {
-  open: false, api: null, timer: null, posted: 0, postedC: 0, postedK: 0, postedG: 0, postedJ: 0,
+  open: false, api: null, timer: null, posted: 0, postedC: 0, postedK: 0, postedG: 0, postedJ: 0, postedS: 0,
   name: localStorage.getItem('ascendName') || '',
   el: id => document.getElementById(id),
   clean(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9 _.-]/g, '').trim().slice(0, 12); },
@@ -3304,6 +4003,7 @@ const LB = {
     if (careerCleared > 0 && careerCleared > this.postedK) jobs.push(['career', careerCleared]);
     if (bestGauntlet > 0 && bestGauntlet > this.postedG) jobs.push(['gauntlet', bestGauntlet]);
     if (bestJewels > 0 && bestJewels > this.postedJ) jobs.push(['jewels', bestJewels]);
+    if (bestSide > 0 && bestSide > this.postedS) jobs.push(['side', bestSide]);
     for (const [m, val] of jobs) {
       try {
         const r = await fetch(api + '/scores', {
@@ -3316,6 +4016,7 @@ const LB = {
         else if (m === 'challenge') { this.postedC = val; localStorage.setItem('ascendPostedC', String(val)); }
         else if (m === 'career') { this.postedK = val; localStorage.setItem('ascendPostedK', String(val)); }
         else if (m === 'gauntlet') { this.postedG = val; localStorage.setItem('ascendPostedG', String(val)); }
+        else if (m === 'side') { this.postedS = val; localStorage.setItem('ascendPostedS', String(val)); }
         else { this.postedJ = val; localStorage.setItem('ascendPostedJ', String(val)); }
         if (this.open && m === mode) {
           this.render(j.scores || []);
@@ -3355,8 +4056,9 @@ const LB = {
     this.el('modeCareer').className = m === 'career' ? 'on' : '';
     this.el('modeGauntlet').className = m === 'gauntlet' ? 'on' : '';
     this.el('modeJewels').className = m === 'jewels' ? 'on' : '';
+    this.el('modeSide').className = m === 'side' ? 'on' : '';
     this.el('lbTitle').textContent = m === 'career' ? 'LEVEL ' + careerLevel + ' FASTEST TIMES'
-      : ({ challenge: 'CHALLENGE', gauntlet: 'GAUNTLET', jewels: 'JEWELS' }[m] || 'MARATHON') + ' LEADERBOARD';
+      : ({ challenge: 'CHALLENGE', gauntlet: 'GAUNTLET', jewels: 'JEWELS', side: 'SIDE SCROLL' }[m] || 'MARATHON') + ' LEADERBOARD';
     this.syncLevel();
   },
   syncLevel() {
@@ -3389,6 +4091,7 @@ const LB = {
     this.postedK = sameName ? parseInt(localStorage.getItem('ascendPostedK') || '0') : 0;
     this.postedG = sameName ? parseInt(localStorage.getItem('ascendPostedG') || '0') : 0;
     this.postedJ = sameName ? parseInt(localStorage.getItem('ascendPostedJ') || '0') : 0;
+    this.postedS = sameName ? parseInt(localStorage.getItem('ascendPostedS') || '0') : 0;
     this.setMode(mode);
     document.querySelectorAll('#lbOpts button').forEach(b => {
       const k = b.dataset.opt;
@@ -3415,7 +4118,7 @@ const LB = {
     };
     this.el('lvPrev').addEventListener('click', () => pickLevel(-1));
     this.el('lvNext').addEventListener('click', () => pickLevel(1));
-    ['modeClimb', 'modeChallenge', 'modeCareer', 'modeGauntlet', 'modeJewels'].forEach(id => this.el(id).addEventListener('click', e => {
+    ['modeClimb', 'modeChallenge', 'modeCareer', 'modeGauntlet', 'modeJewels', 'modeSide'].forEach(id => this.el(id).addEventListener('click', e => {
       const m = e.currentTarget.dataset.mode;
       if (m === mode) return;
       GHOST.save();
@@ -3435,13 +4138,13 @@ const LB = {
     this.el('lbSave').addEventListener('click', async () => {
       const nm = this.clean(this.el('lbName').value);
       if (!nm) { this.status('name needs letters or numbers'); return; }
-      if (nm !== this.name) { this.posted = 0; this.postedC = 0; this.postedK = 0; this.postedG = 0; this.postedJ = 0; }
+      if (nm !== this.name) { this.posted = 0; this.postedC = 0; this.postedK = 0; this.postedG = 0; this.postedJ = 0; this.postedS = 0; }
       this.name = nm;
       this.el('lbName').value = nm;
       localStorage.setItem('ascendName', nm);
       localStorage.setItem('ascendPostedName', nm);
       this.postAllTimes();
-      if (best > 0 || bestChallenge > 0 || careerCleared > 0 || bestGauntlet > 0 || bestJewels > 0) { this.status('posting'); await this.post(); }
+      if (best > 0 || bestChallenge > 0 || careerCleared > 0 || bestGauntlet > 0 || bestJewels > 0 || bestSide > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
     document.addEventListener('visibilitychange', () => {
