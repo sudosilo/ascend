@@ -9,7 +9,12 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.4 - STEADY POWER-UP                      ║
+║  CURRENT BUILD : v1.5 - SHRINK, GROW, BITFIELD STATIC        ║
+║  v1.5: shrink pickup (smaller body) and grow pickup (bigger  ║
+║        body), SIZE_TIME each, they cancel each other. Static ║
+║        pickup throws a random Bitfield Synth pattern over    ║
+║        the whole screen for STATIC_TIME (random expression   ║
+║        and palette ported from sudosilo/bitfield-synth).     ║
 ║  v1.4: blue level pickup (STEADY_CHANCE per platform) gives  ║
 ║        two minutes of calm controls: slower side accel and   ║
 ║        top speed, more grip, half wind, softer glider dive.  ║
@@ -352,6 +357,7 @@ function generateUpTo(targetY) {
     platforms.push(np);
     maybeSpawnRocket(np);
     maybeSpawnSteady(np);
+    maybeSpawnOddity(np);
     maybeSpawnGlider(np);
     maybeSpawnGem(np);
     maybeSpawnToken(np);
@@ -391,6 +397,7 @@ function respawnFromY() {
   platforms = platforms.filter(p => p.isGround);
   rockets = [];
   steadies = [];
+  oddities = [];
   gliders = [];
   gems = [];
   coins = [];
@@ -723,6 +730,9 @@ function initPlayer() {
     peakY:       -CFG.PLAYER_H - 42,
     rocketTimer: 0,
     steadyTime:  0,
+    sizeKind:    '',
+    sizeTime:    0,
+    staticTime:  0,
     hasGlider:   false,
     gliderTime:  0,
   };
@@ -839,6 +849,9 @@ const audio = {
     bonk:        () => { if (SFX.ok('bonk', 120)) { SFX.tone('square', 180, 110, 0.08, 0.14); SFX.noise(0.05, 0.2, 800); } buzz(25); },
     warp:        () => { if (SFX.ok('warp')) { SFX.tone('sine', 1400, 120, 0.45, 0.14); SFX.noise(0.4, 0.15, 3000); } buzz(70); },
     steady:      () => { if (SFX.ok('steady')) [330, 440, 554].forEach((f, i) => SFX.tone('sine', f, 0, 0.25, 0.1, i * 0.07)); buzz([30, 40, 30]); },
+    shrink:      () => { if (SFX.ok('shrink')) SFX.tone('square', 900, 300, 0.3, 0.1); buzz(20); },
+    grow:        () => { if (SFX.ok('grow')) SFX.tone('square', 150, 450, 0.35, 0.12); buzz([40, 20, 60]); },
+    staticOn:    () => { if (SFX.ok('staticOn')) { SFX.noise(0.6, 0.35, 6000); SFX.tone('sawtooth', 60, 2000, 0.5, 0.06); } buzz([20, 20, 20, 20, 20, 20, 60]); },
     zone:        () => { if (SFX.ok('zone')) [392, 494, 587, 784].forEach((f, i) => SFX.tone('triangle', f, 0, 0.6, 0.07, i * 0.12)); buzz([50, 60, 50, 60, 120]); },
   }
 };
@@ -1410,6 +1423,192 @@ function drawSteadies(time) {
   }
 }
 
+// ── SHRINK / GROW / STATIC PICKUPS ─────────────────────────────
+let oddities = [];
+const ODD_CHANCE = { shrink: 0.025, grow: 0.025, static: 0.025 };
+const SIZE_TIME   = 30000;   // ms a shrink or grow lasts
+const STATIC_TIME = 10000;   // ms the bitfield static covers the screen
+const SIZE_SCALE  = { shrink: 0.6, grow: 1.55 };
+
+function maybeSpawnOddity(p) {
+  if (p.vx) return;
+  const r = Math.random();
+  let kind = null, acc = 0;
+  for (const k of ['shrink', 'grow', 'static']) { acc += ODD_CHANCE[k]; if (r < acc) { kind = k; break; } }
+  if (!kind) return;
+  oddities.push({ kind, x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 });
+}
+
+function setPlayerSize(scale) {
+  const feet = player.y + player.h;
+  const cx = player.x + player.w / 2;
+  player.w = Math.round(CFG.PLAYER_W * scale);
+  player.h = Math.round(CFG.PLAYER_H * scale);
+  player.y = feet - player.h;
+  player.x = cx - player.w / 2;
+}
+
+function updateOddities(ms) {
+  const pcx = player.x + player.w / 2;
+  const pcy = player.y + player.h / 2;
+  const reach = 20 + player.w / 2;
+  for (const o of oddities) {
+    if (o.taken) continue;
+    const dx = pcx - o.x, dy = pcy - o.y;
+    if (dx * dx + dy * dy > reach * reach) continue;
+    o.taken = true;
+    if (o.kind === 'static') {
+      player.staticTime = STATIC_TIME;
+      staticFx.start();
+      showBanner('STATIC!');
+      audio.triggers.staticOn();
+    } else {
+      player.sizeKind = o.kind;
+      player.sizeTime = SIZE_TIME;
+      setPlayerSize(SIZE_SCALE[o.kind]);
+      showBanner(o.kind === 'shrink' ? 'SHRUNK' : 'GROWN');
+      audio.triggers[o.kind]();
+    }
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 4;
+      particles.push({ x: o.x, y: o.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 1, decay: 0.03, size: 2 + Math.random() * 3,
+        hue: o.kind === 'static' ? Math.random() * 360 : 210, type: 'splash' });
+    }
+  }
+  oddities = oddities.filter(o => !o.taken && (mode === 'challenge' || o.y < cameraY + H + 200));
+
+  if (player.sizeTime > 0) {
+    player.sizeTime -= ms;
+    if (player.sizeTime <= 0) {
+      player.sizeTime = 0;
+      player.sizeKind = '';
+      setPlayerSize(1);
+      showBanner('BACK TO NORMAL SIZE');
+      audio.triggers.spent();
+    }
+  }
+  if (player.staticTime > 0) {
+    player.staticTime -= ms;
+    if (player.staticTime <= 0) {
+      player.staticTime = 0;
+      staticFx.on = false;
+      showBanner('STATIC CLEARED');
+    }
+  }
+}
+
+function drawOddities(time) {
+  for (const o of oddities) {
+    const sy = o.y - cameraY;
+    if (sy < -24 || sy > H + 24) continue;
+    const y = o.y + Math.sin(time * 0.004 + o.ph) * 3;
+    ctx.globalAlpha = 0.3 + 0.2 * Math.abs(Math.sin(time * 0.005 + o.ph));
+    ctx.fillStyle = o.kind === 'static' ? 'hsl(' + ((time * 0.3) % 360) + ',100%,60%)' : '#3d8bff';
+    ctx.beginPath(); ctx.arc(o.x, y, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    if (o.kind === 'static') {
+      for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 4; gx++) {
+        ctx.fillStyle = 'hsl(' + (((gx * 7 ^ gy * 13) * 40 + time * 0.4) % 360) + ',100%,55%)';
+        ctx.fillRect(o.x - 8 + gx * 4, y - 8 + gy * 4, 4, 4);
+      }
+      ctx.strokeStyle = '#1b2f6b'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(o.x - 8, y - 8, 16, 16);
+    } else {
+      const big = o.kind === 'grow';
+      const sz = big ? 14 : 6;
+      ctx.fillStyle = '#e8f1ff';
+      ctx.fillRect(o.x - sz / 2, y - sz / 2, sz, sz);
+      ctx.strokeStyle = '#1b2f6b'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(o.x - sz / 2, y - sz / 2, sz, sz);
+      // corner arrows: out for grow, in for shrink
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+      for (const [ax, ay] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const a1 = big ? 9 : 12, a2 = big ? 12 : 8;
+        ctx.beginPath();
+        ctx.moveTo(o.x + ax * a1, y + ay * a1);
+        ctx.lineTo(o.x + ax * a2, y + ay * a2);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+// ── Bitfield static: patterns ported from sudosilo/bitfield-synth ──
+const staticFx = {
+  on: false, R: 72, cv: null, cx: null, img: null, fn: null, pal: null, t: 0, skip: 0,
+  exprs: [
+    (x, y, t, b) => Math.tan(x | y ^ t / 30) * 10,
+    (x, y, t, b) => Math.tan(x | y ^ t / 30) * 10 * (1 + b.bass * 4),
+    (x, y, t, b) => (x ^ y) + t + b.treble * 60,
+    (x, y, t, b) => Math.tan(x * y / 40 + t / 20 + b.beat * 3) * 8,
+    (x, y, t, b) => (Math.sin(x / 8 + t / 30) + Math.sin(y / 8) + Math.sin((x + y) / 16 + t / 40) + b.vol * 4) * 40,
+    (x, y, t, b) => (x | y ^ t / 20) * (1 + b.bass * 5),
+    (x, y, t, b) => ((x * y) >> 3) + t * 2,
+    (x, y, t, b) => (x & y) * 4 + t,
+  ],
+  palettes: ['blue', 'spectrum', 'fire', 'ice', 'neon'],
+  hue(h) {
+    h = ((h % 360) + 360) % 360;
+    const c = 255, X = (c * (1 - Math.abs((h / 60) % 2 - 1))) | 0;
+    if (h < 60) return [c, X, 0]; if (h < 120) return [X, c, 0]; if (h < 180) return [0, c, X];
+    if (h < 240) return [0, X, c]; if (h < 300) return [X, 0, c]; return [c, 0, X];
+  },
+  buildPal(kind) {
+    const P = new Uint8ClampedArray(256 * 3);
+    for (let b = 0; b < 256; b++) {
+      const n = b / 255; let r, g, bl;
+      if (kind === 'blue') { r = b * 0.22; g = b * 0.52; bl = Math.min(255, b * 1.1); }
+      else if (kind === 'spectrum') { [r, g, bl] = this.hue(n * 360); }
+      else if (kind === 'fire') { r = Math.min(255, n * 3 * 255); g = Math.min(255, Math.max(0, (n - 0.33) * 3) * 255); bl = Math.min(255, Math.max(0, (n - 0.66) * 3) * 255); }
+      else if (kind === 'ice') { bl = Math.min(255, n * 2.2 * 255); g = Math.min(255, Math.max(0, (n - 0.35) * 2.2) * 255); r = Math.min(255, Math.max(0, (n - 0.7) * 3.3) * 255); }
+      else { if (n < 0.5) { const k = n / 0.5; r = k * 255; g = k * 40; bl = k * 255; } else { const k = (n - 0.5) / 0.5; r = 40 * (1 - k); g = k * 255; bl = 255; } }
+      P[b * 3] = r; P[b * 3 + 1] = g; P[b * 3 + 2] = bl;
+    }
+    return P;
+  },
+  start() {
+    if (!this.cv) {
+      this.cv = document.createElement('canvas');
+      this.cv.width = this.cv.height = this.R;
+      this.cx = this.cv.getContext('2d');
+      this.img = this.cx.createImageData(this.R, this.R);
+    }
+    this.fn = this.exprs[Math.floor(Math.random() * this.exprs.length)];
+    this.pal = this.buildPal(this.palettes[Math.floor(Math.random() * this.palettes.length)]);
+    this.t = Math.random() * 1000;
+    this.on = true;
+  },
+  render() {
+    const R = this.R, d = this.img.data, P = this.pal, fn = this.fn, t = this.t;
+    // fake audio drive so the audio presets still pulse
+    const b = {
+      bass: 0.5 + 0.5 * Math.sin(t / 9), treble: 0.5 + 0.5 * Math.sin(t / 5),
+      vol: 0.5 + 0.5 * Math.sin(t / 13), beat: Math.max(0, Math.sin(t / 4)) ** 8,
+    };
+    for (let y = 0; y < R; y++) for (let x = 0; x < R; x++) {
+      let v; try { v = fn(x, y, t, b); } catch (e) { v = 0; }
+      if (!isFinite(v)) v = 0;
+      const c = (v | 0) & 255, i = (y * R + x) * 4;
+      d[i] = P[c * 3]; d[i + 1] = P[c * 3 + 1]; d[i + 2] = P[c * 3 + 2]; d[i + 3] = 255;
+    }
+    this.cx.putImageData(this.img, 0, 0);
+  },
+  draw(ms) {
+    if (!this.on || !player || player.staticTime <= 0) return;
+    this.t += ms / 16.67;
+    if ((this.skip = (this.skip + 1) % 2) === 0) this.render();
+    const left = player.staticTime, total = STATIC_TIME;
+    // fade in over the first half second, out over the last second
+    const fade = Math.min(1, (total - left) / 500, left / 1000);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.62 * fade;
+    ctx.drawImage(this.cv, 0, 0, W, H);
+    ctx.restore();
+  },
+};
+
 function maybeSpawnRocket(p) {
   if (Math.random() < ROCKET_CHANCE) {
     rockets.push({ x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 });
@@ -1642,6 +1841,8 @@ function initGame() {
   platforms       = [];
   rockets         = [];
   steadies        = [];
+  oddities        = [];
+  staticFx.on     = false;
   gliders         = [];
   gems            = [];
   gemCount        = 0;
@@ -2002,6 +2203,7 @@ function render(time) {
   // Rocket pickups
   drawRockets(time);
   drawSteadies(time);
+  drawOddities(time);
   drawGliders(time);
   drawGems(time);
   drawTokens(time);
@@ -2056,6 +2258,8 @@ function render(time) {
   }
 
   ctx.restore();
+
+  staticFx.draw(16.67);
 
   if (warpFlash > 0) {
     ctx.globalAlpha = warpFlash;
@@ -2199,6 +2403,24 @@ function drawHUD() {
     ctx.textAlign = 'right';
   }
 
+  // Size and static timers
+  if (player && player.sizeTime > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText((player.sizeKind === 'shrink' ? 'shrunk ' : 'grown ') + Math.ceil(player.sizeTime / 1000) + 's', 14, 146);
+    ctx.fillStyle = '#16223f'; ctx.fillRect(14, 151, 60, 5);
+    ctx.fillStyle = '#3d8bff'; ctx.fillRect(14, 151, 60 * player.sizeTime / SIZE_TIME, 5);
+    ctx.textAlign = 'right';
+  }
+  if (player && player.staticTime > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ff6688';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('static ' + Math.ceil(player.staticTime / 1000) + 's', 14, 172);
+    ctx.textAlign = 'right';
+  }
+
   // Parachute indicator
   if (player && !player.onGround && !player.chute && player.vy > 0) {
     const pct = Math.min(player.fallTimer / CFG.CHUTE_DEPLOY_S, 1);
@@ -2296,6 +2518,7 @@ function loop(ts) {
     updateShooters();
     updateRockets(ms);
     updateSteadies(ms);
+    updateOddities(ms);
     updateGliders();
     updateGems();
     updateTokens(ms);
