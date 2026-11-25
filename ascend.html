@@ -9,7 +9,14 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.6 - CAREER, SLOW-MO, TRAIL BLAZER        ║
+║  CURRENT BUILD : v1.7 - GAUNTLET, JEWELS, POWER-UP SPACING   ║
+║  v1.7: GAUNTLET mode: industrial look, three lives, no       ║
+║        parachute, falling below your last platform costs a  ║
+║        life, turrets fire aimed rounds every ~1.3 to 2.2s.  ║
+║        JEWELS mode: jewels everywhere, score = jewels, full ║
+║        sets of eight platforms give a PERFECT SET bonus.    ║
+║        Power-ups now spawn through one picker with at least ║
+║        POWERUP_GAP platforms between any two.               ║
 ║  v1.6: CAREER mode, 25 levels, target heights grow from 150m ║
 ║        to about 14000m (LEVEL_TARGET), harder each level     ║
 ║        (more steel, more movers, wider gaps). Unlocks saved, ║
@@ -159,7 +166,7 @@
     border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
   }
   #lvText { flex: 1; text-align: center; font: bold 13px monospace; color: #d8e6ff; white-space: nowrap; overflow: hidden; }
-  #lbModes { display: flex; gap: 8px; margin-bottom: 16px; }
+  #lbModes { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 16px; }
   #lbModes button {
     flex: 1; padding: 10px 0; font: bold 11px monospace; border-radius: 6px;
     border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
@@ -186,6 +193,8 @@
     <button id="modeClimb" data-mode="climb">MARATHON</button>
     <button id="modeChallenge" data-mode="challenge">CHALLENGE</button>
     <button id="modeCareer" data-mode="career">CAREER</button>
+    <button id="modeGauntlet" data-mode="gauntlet">GAUNTLET</button>
+    <button id="modeJewels" data-mode="jewels">JEWELS</button>
   </div>
   <label>CAREER LEVEL</label>
   <div id="lbLevel">
@@ -377,12 +386,11 @@ function generateUpTo(targetY) {
       np.x = Math.min(np.x, W - np.w);
     }
     platforms.push(np);
-    maybeSpawnRocket(np);
-    maybeSpawnSteady(np);
-    maybeSpawnOddity(np);
-    maybeSpawnGlider(np);
+    maybeSpawnPowerup(np);
     maybeSpawnGem(np);
     maybeSpawnToken(np);
+    maybeSpawnTurret(np);
+    maybeSpawnJewels(np);
   }
 }
 
@@ -420,6 +428,9 @@ function respawnFromY() {
   rockets = [];
   steadies = [];
   oddities = [];
+  platsSincePU = Math.floor(POWERUP_GAP / 2);
+  jewels = [];
+  turrets = []; bullets = [];
   gliders = [];
   gems = [];
   coins = [];
@@ -652,6 +663,14 @@ function zoneSky() {
 }
 
 function drawZoneSky() {
+  if (mode === 'gauntlet') {
+    const gg = ctx.createLinearGradient(0, 0, 0, H);
+    gg.addColorStop(0, GAUNTLET_THEME.top);
+    gg.addColorStop(1, GAUNTLET_THEME.bot);
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, 0, W, H);
+    return;
+  }
   const z = zoneSky();
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, z.top);
@@ -672,7 +691,7 @@ function drawZoneSky() {
 const GHOST = {
   rec: [], recT: 0, runT: 0, play: null, playBest: 0, dirty: false,
   key() { return 'ascendGhostRun_' + mode + (mode === 'career' ? '_' + careerLevel : ''); },
-  metric() { return mode === 'challenge' ? tokenNeed - 1 : score; },
+  metric() { return mode === 'challenge' ? tokenNeed - 1 : mode === 'jewels' ? jewelScore : score; },
   load() {
     this.play = null; this.playBest = 0;
     try {
@@ -766,8 +785,10 @@ function initPlayer() {
 // ════════════════════════════════════════════════════════════
 //  SCORE
 // ════════════════════════════════════════════════════════════
-let mode = ['challenge', 'career'].includes(localStorage.getItem('ascendMode')) ? localStorage.getItem('ascendMode') : 'climb';
+let mode = ['challenge', 'career', 'gauntlet', 'jewels'].includes(localStorage.getItem('ascendMode')) ? localStorage.getItem('ascendMode') : 'climb';
 let bestChallenge = parseInt(localStorage.getItem('bestChallenge') || '0');
+let bestGauntlet  = parseInt(localStorage.getItem('bestGauntlet') || '0');
+let bestJewels    = parseInt(localStorage.getItem('bestJewels') || '0');
 let score = 0;      // max height in "meters" (world units / 10)
 let best  = parseInt(localStorage.getItem('best') || '0');
 
@@ -859,7 +880,7 @@ const audio = {
       if (SFX.ok('land', 60)) { SFX.noise(0.08 + k * 0.1, 0.25 + k * 0.4, 500 + k * 600); SFX.tone('sine', 140, 60, 0.12, 0.2 * k + 0.05); }
       buzz(Math.round(12 + k * 38));
     },
-    die:         () => {},
+    die:         () => { if (SFX.ok('die', 500)) [392, 330, 262, 196].forEach((f, i) => SFX.tone('square', f, 0, 0.22, 0.12, i * 0.16)); buzz([200, 80, 300]); },
     chuteOpen:   () => { if (SFX.ok('chuteOpen')) { SFX.noise(0.15, 0.25, 2500); SFX.tone('triangle', 300, 420, 0.1, 0.1); } buzz(15); },
     chuteClose:  () => { if (SFX.ok('chuteClose')) SFX.tone('triangle', 380, 220, 0.1, 0.08); },
     coin:        () => { if (SFX.ok('coin', 30)) { SFX.tone('square', 988, 0, 0.06, 0.08); SFX.tone('square', 1319, 0, 0.12, 0.08, 0.06); } },
@@ -879,6 +900,8 @@ const audio = {
     staticOn:    () => { if (SFX.ok('staticOn')) { SFX.noise(0.6, 0.35, 6000); SFX.tone('sawtooth', 60, 2000, 0.5, 0.06); } buzz([20, 20, 20, 20, 20, 20, 60]); },
     slowmo:      () => { if (SFX.ok('slowmo')) SFX.tone('sine', 600, 90, 0.9, 0.14); buzz([100, 60, 100]); },
     trail:       () => { if (SFX.ok('trail')) [523, 659, 784, 988, 1175, 1319].forEach((f, i) => SFX.tone('square', f, 0, 0.07, 0.07, i * 0.04)); buzz(40); },
+    hurt:        () => { if (SFX.ok('hurt', 200)) { SFX.tone('sawtooth', 300, 70, 0.35, 0.16); SFX.noise(0.2, 0.3, 1500); } },
+    shot:        () => { if (SFX.ok('shot', 60)) { SFX.noise(0.06, 0.18, 2500); SFX.tone('square', 520, 260, 0.06, 0.05); } },
     zone:        () => { if (SFX.ok('zone')) [392, 494, 587, 784].forEach((f, i) => SFX.tone('triangle', f, 0, 0.6, 0.07, i * 0.12)); buzz([50, 60, 50, 60, 120]); },
   }
 };
@@ -1149,7 +1172,7 @@ let streaks = [];
 function updateStreaks() {
   const strength = Math.abs(wind.force);
   // Spawn rate scales with wind strength - calm = almost none
-  const wzz = ZONES[zoneIdx].weather;
+  const wzz = theme().weather;
   if (Math.random() < (wzz === 'rain' ? 0.1 + strength * 3 : 0.35 + strength * 2)) {
     streaks.push({
       x: Math.random() * W,
@@ -1158,8 +1181,8 @@ function updateStreaks() {
     });
   }
   for (const s of streaks) {
-    const wz = ZONES[zoneIdx].weather;
-    const slow = wz === 'snow' ? 0.3 : wz === 'dust' ? 0.15 : wz === 'spark' ? 0.5 : 1;
+    const wz = theme().weather;
+    const slow = wz === 'snow' ? 0.3 : wz === 'dust' ? 0.15 : wz === 'spark' ? 0.5 : wz === 'ash' ? 0.4 : 1;
     s.x += wind.force * 30 * (wz === 'dust' ? 1.6 : 1);   // lean hard with the wind
     s.y += (7 + strength * 6) * slow;                      // fall
     s.life -= 0.012;
@@ -1168,7 +1191,16 @@ function updateStreaks() {
 }
 function drawStreaks() {
   const strength = Math.abs(wind.force);
-  const Z = ZONES[zoneIdx];
+  const Z = theme();
+  if (Z.weather === 'ash') {
+    for (const s of streaks) {
+      ctx.globalAlpha = s.life * 0.8;
+      ctx.fillStyle = (Math.floor(s.x) % 3) ? 'rgba(255,140,40,1)' : 'rgba(90,74,62,1)';
+      ctx.fillRect(s.x, s.y, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
   if (Z.weather !== 'rain') {
     for (const s of streaks) {
       ctx.globalAlpha = s.life * (Z.weather === 'dust' ? 0.5 : 0.8);
@@ -1672,6 +1704,309 @@ const staticFx = {
   },
 };
 
+// ── POWER-UP PACING: one picker, spaced far apart ──────────────
+const POWERUP_GAP  = 14;     // minimum platforms between any two power-ups
+const POWERUP_ROLL = 0.30;   // chance per platform once the gap has passed
+const PU_WEIGHTS = { rocket: 3, glider: 2, steady: 3, shrink: 1.5, grow: 1.5, static: 1.5, slowmo: 2, trail: 2 };
+let platsSincePU = 0;
+function maybeSpawnPowerup(p) {
+  platsSincePU++;
+  if (p.vx || platsSincePU < POWERUP_GAP || Math.random() > POWERUP_ROLL) return;
+  let total = 0; for (const k in PU_WEIGHTS) total += PU_WEIGHTS[k];
+  let r = Math.random() * total, kind = 'rocket';
+  for (const k in PU_WEIGHTS) { r -= PU_WEIGHTS[k]; if (r <= 0) { kind = k; break; } }
+  const item = { x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 };
+  if (kind === 'rocket') rockets.push(item);
+  else if (kind === 'glider') gliders.push(item);
+  else if (kind === 'steady') steadies.push(item);
+  else { item.kind = kind; oddities.push(item); }
+  platsSincePU = 0;
+}
+
+// ── GAUNTLET MODE: industrial, three lives, turrets, no falling ──
+const GAUNTLET_LIVES = 3;
+const GAUNTLET_FALL  = 340;   // px below your last platform before you lose a life
+const GAUNTLET_THEME = { top: '#f3cf9e', bot: '#b9a58e', grid: '#7a6450', player: '#1f3a8a', weather: 'ash', wcol: '255,140,40', starA: 0 };
+let lives = GAUNTLET_LIVES;
+let checkpoint = null;
+let invulnT = 0;
+let turrets = [];
+let bullets = [];
+
+function theme() { return mode === 'gauntlet' ? GAUNTLET_THEME : ZONES[zoneIdx]; }
+
+function maybeSpawnTurret(p) {
+  if (mode !== 'gauntlet' || p.vx || p.isGround || p.y > -1500) return;
+  const m = -p.y / 10;
+  const chance = Math.min(0.28, 0.10 + m / 20000);
+  if (Math.random() > chance) return;
+  const side = Math.random() < 0.5 ? 0.2 : 0.8;
+  turrets.push({ x: p.x + p.w * side, y: p.y, plat: p, cd: 1200 + Math.random() * 1500, aim: -Math.PI / 2, dead: false });
+}
+
+function loseLife(reason) {
+  if (invulnT > 0 || state !== STATE.PLAYING) return;
+  lives--;
+  audio.triggers.hurt();
+  buzz([120, 60, 160]);
+  warpFlash = 0.6;
+  if (lives <= 0) {
+    lives = 0;
+    GHOST.dirty = true; GHOST.save();
+    LB.queue();
+    state = STATE.DEAD;
+    audio.triggers.die();
+    return;
+  }
+  showBanner(reason + ' ' + lives + (lives === 1 ? ' LIFE LEFT' : ' LIVES LEFT'));
+  invulnT = 2200;
+  bullets = [];
+  const cp = checkpoint && platforms.includes(checkpoint) ? checkpoint : platforms.find(q => q.isGround);
+  player.x = cp.x + cp.w / 2 - player.w / 2;
+  player.y = cp.y - player.h;
+  player.vx = 0; player.vy = 0;
+  player.chute = false; player.fallTimer = 0; player.rocketTimer = 0;
+}
+
+function updateGauntlet(ms, wr) {
+  if (mode !== 'gauntlet') return;
+  if (invulnT > 0) invulnT -= ms;
+  if (player.onGround) {
+    const under = platforms.find(q => !q.vx &&
+      player.x + player.w > q.x && player.x < q.x + q.w && Math.abs(player.y + player.h - q.y) < 2);
+    if (under) checkpoint = under;
+  }
+  const cpY = checkpoint ? checkpoint.y : 0;
+  if (player.y > cpY + GAUNTLET_FALL && player.rocketTimer <= 0) loseLife('FELL!');
+  if (score > bestGauntlet) {
+    bestGauntlet = score;
+    localStorage.setItem('bestGauntlet', bestGauntlet);
+    LB.queue();
+  }
+  const pcx = player.x + player.w / 2, pcy = player.y + player.h / 2;
+  const m = Math.max(0, score);
+  const interval = Math.max(1300, 2200 - m * 0.25);
+  for (const t of turrets) {
+    if (!platforms.includes(t.plat)) { t.dead = true; continue; }
+    const sy = t.y - cameraY;
+    t.aim = Math.atan2(pcy - (t.y - 10), pcx - t.x);
+    if (sy < -40 || sy > H + 40) continue;
+    t.cd -= ms * wr;
+    if (t.cd <= 0) {
+      t.cd = interval * (0.85 + Math.random() * 0.3);
+      const sp = 3.4;
+      bullets.push({ x: t.x + Math.cos(t.aim) * 14, y: t.y - 10 + Math.sin(t.aim) * 14,
+        vx: Math.cos(t.aim) * sp, vy: Math.sin(t.aim) * sp, life: 4500 });
+      audio.triggers.shot();
+    }
+  }
+  turrets = turrets.filter(t => !t.dead);
+  for (const b of bullets) {
+    b.x += b.vx * wr * (ms / 16.67);
+    b.y += b.vy * wr * (ms / 16.67);
+    b.life -= ms * wr;
+    if (b.x > player.x - 2 && b.x < player.x + player.w + 2 && b.y > player.y - 2 && b.y < player.y + player.h + 2) {
+      b.life = 0;
+      if (player.rocketTimer <= 0) loseLife('HIT!');
+    }
+    // steel blocks stop rounds
+    for (const q of platforms) if (q.solid && b.x > q.x && b.x < q.x + q.w && b.y > q.y && b.y < q.y + q.h) b.life = 0;
+  }
+  bullets = bullets.filter(b => b.life > 0);
+}
+
+function drawTurrets(time) {
+  if (mode !== 'gauntlet') return;
+  for (const t of turrets) {
+    const sy = t.y - cameraY;
+    if (sy < -40 || sy > H + 40) continue;
+    ctx.fillStyle = '#4a4038';
+    ctx.fillRect(t.x - 10, t.y - 10, 20, 10);
+    ctx.fillStyle = '#ffcc00';
+    for (let i = 0; i < 4; i++) ctx.fillRect(t.x - 10 + i * 6, t.y - 3, 3, 3);
+    ctx.fillStyle = '#6b5d50';
+    ctx.beginPath(); ctx.arc(t.x, t.y - 10, 8, Math.PI, 0); ctx.fill();
+    ctx.save();
+    ctx.translate(t.x, t.y - 10);
+    ctx.rotate(t.aim);
+    ctx.fillStyle = '#2b2520';
+    ctx.fillRect(0, -2.5, 16, 5);
+    ctx.restore();
+    // warning light flashes right before a shot
+    const warn = t.cd < 450;
+    ctx.fillStyle = warn ? (Math.floor(time / 80) % 2 ? '#ff3b1a' : '#ffd21a') : '#3d8bff';
+    ctx.beginPath(); ctx.arc(t.x, t.y - 16, 2.5, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const b of bullets) {
+    ctx.fillStyle = '#ff6a1a';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff3b0';
+    ctx.beginPath(); ctx.arc(b.x, b.y, 1.5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawGirder(p, time) {
+  ctx.fillStyle = '#5a4a3e';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.fillStyle = '#8a6d55';
+  ctx.fillRect(p.x, p.y, p.w, 2);
+  ctx.fillStyle = '#3a2f27';
+  ctx.fillRect(p.x, p.y + p.h - 2, p.w, 2);
+  ctx.fillStyle = '#ffcc00';
+  for (let x = p.x; x < p.x + p.w - 4; x += 12) ctx.fillRect(x, p.y + 2, 6, 2);
+  ctx.fillStyle = '#2b2520';
+  for (let x = p.x + 4; x < p.x + p.w - 2; x += 10) ctx.fillRect(x, p.y + 5, 2, 2);
+  if (p.vx) {
+    ctx.fillStyle = '#3d8bff';
+    ctx.fillRect(p.x, p.y + p.h, p.w, 2);
+  }
+}
+
+// Factory skyline with smokestacks, steam, pipes and blinking lights
+const factory = [];
+(function initFactory() {
+  for (let i = 0; i < 18; i++) factory.push({ x: Math.random() * 2000, w: 30 + Math.random() * 70, h: 80 + Math.random() * 220, layer: i % 2, stack: Math.random() < 0.4, ph: Math.random() * 6 });
+})();
+function drawIndustrialBG(time) {
+  const speeds = [0.08, 0.2];
+  for (let L = 0; L < 2; L++) {
+    const col = L ? '#7a6656' : '#9c8875';
+    for (const f of factory) {
+      if (f.layer !== L) continue;
+      const sx = f.x % (W + 100) - 50;
+      const base = H + ((-cameraY * speeds[L]) % 300);
+      ctx.fillStyle = col;
+      ctx.fillRect(sx, base - f.h, f.w, f.h + 400);
+      if (f.stack) {
+        ctx.fillRect(sx + f.w * 0.35, base - f.h - 60, 10, 60);
+        const puff = (time * 0.02 + f.ph * 40) % 60;
+        ctx.globalAlpha = 0.25 * (1 - puff / 60);
+        ctx.fillStyle = '#f5ece0';
+        ctx.beginPath(); ctx.arc(sx + f.w * 0.35 + 5, base - f.h - 64 - puff, 8 + puff * 0.3, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = Math.sin(time * 0.004 + f.ph) > 0.6 ? '#ff3b1a' : '#3d8bff';
+      ctx.fillRect(sx + 4, base - f.h + 6, 3, 3);
+    }
+  }
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = '#5a4a3e';
+  const gap = 260, off = ((-cameraY * 0.5) % gap + gap) % gap;
+  for (let y = off; y < H; y += gap) { ctx.fillRect(0, y, W, 6); ctx.fillRect(0, y + 10, W, 2); }
+  ctx.globalAlpha = 1;
+}
+
+function drawLives() {
+  if (mode !== 'gauntlet') return;
+  for (let i = 0; i < GAUNTLET_LIVES; i++) {
+    const x = 68 + i * 18, y = 54;
+    ctx.fillStyle = i < lives ? '#3d8bff' : 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.moveTo(x + 7, y + 12);
+    ctx.bezierCurveTo(x - 4, y + 4, x + 1, y - 3, x + 7, y + 2);
+    ctx.bezierCurveTo(x + 13, y - 3, x + 18, y + 4, x + 7, y + 12);
+    ctx.fill();
+  }
+  if (invulnT > 0) {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('shielded', 68, 80);
+    ctx.textAlign = 'right';
+  }
+}
+
+// ── JEWELS MODE: jewels everywhere, score is jewels collected ────
+const JEWEL_SET = 8;          // platforms per set; collect every jewel in a set for a bonus
+const JEWEL_SET_BONUS = 10;
+const JEWEL_KINDS = [
+  { c: '#ff2a55', e: '#ffd0da' },  // ruby
+  { c: '#3d8bff', e: '#d6e8ff' },  // sapphire
+  { c: '#22d07a', e: '#c8ffe2' },  // emerald
+  { c: '#ffb81a', e: '#fff0c0' },  // topaz
+  { c: '#a64bff', e: '#ead6ff' },  // amethyst
+];
+let jewels = [];
+let jewelScore = 0;
+let jewelPlat = 0;
+const jewelSets = {};
+
+function maybeSpawnJewels(p) {
+  if (mode !== 'jewels') return;
+  const set = Math.floor(jewelPlat++ / JEWEL_SET);
+  const S = jewelSets[set] || (jewelSets[set] = { total: 0, got: 0, done: false });
+  const n = 2 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    const diamond = Math.random() < 0.04;
+    const k = JEWEL_KINDS[Math.floor(Math.random() * JEWEL_KINDS.length)];
+    const arc = (i - (n - 1) / 2);
+    jewels.push({
+      x: Math.max(10, Math.min(W - 10, p.x + p.w / 2 + arc * 18)),
+      y: p.y - 24 - (n - Math.abs(arc)) * 10,
+      c: diamond ? '#e8f8ff' : k.c, e: diamond ? '#ffffff' : k.e, v: diamond ? 5 : 1,
+      diamond, set, ph: Math.random() * 6, taken: false,
+    });
+    S.total++;
+  }
+}
+
+function updateJewels() {
+  if (mode !== 'jewels') return;
+  const pcx = player.x + player.w / 2, pcy = player.y + player.h / 2;
+  const reach = 16 + player.w / 2;
+  for (const j of jewels) {
+    if (j.taken) continue;
+    const dx = pcx - j.x, dy = pcy - j.y;
+    if (dx * dx + dy * dy > reach * reach) continue;
+    j.taken = true;
+    jewelScore += j.v;
+    const S = jewelSets[j.set];
+    if (S) S.got++;
+    audio.triggers.gem();
+    if (j.diamond) { showBanner('DIAMOND +5'); buzz(30); }
+    if (S && S.got === S.total && !S.done) {
+      S.done = true;
+      jewelScore += JEWEL_SET_BONUS;
+      showBanner('PERFECT SET +' + JEWEL_SET_BONUS);
+      audio.triggers.token();
+    }
+    for (let i = 0; i < 8; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 3;
+      particles.push({ x: j.x, y: j.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, decay: 0.04,
+        size: 1.5 + Math.random() * 2, hue: 200, type: 'splash' });
+    }
+  }
+  jewels = jewels.filter(j => !j.taken && j.y < cameraY + H + 200);
+  if (jewelScore > bestJewels) {
+    bestJewels = jewelScore;
+    localStorage.setItem('bestJewels', bestJewels);
+    LB.queue();
+  }
+}
+
+function drawJewels(time) {
+  if (mode !== 'jewels') return;
+  for (const j of jewels) {
+    const sy = j.y - cameraY;
+    if (sy < -20 || sy > H + 20) continue;
+    const y = j.y + Math.sin(time * 0.005 + j.ph) * 2.5;
+    const r = j.diamond ? 9 : 6;
+    ctx.fillStyle = j.c;
+    ctx.beginPath();
+    ctx.moveTo(j.x, y - r); ctx.lineTo(j.x + r * 0.8, y - r * 0.2);
+    ctx.lineTo(j.x, y + r); ctx.lineTo(j.x - r * 0.8, y - r * 0.2);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = j.e;
+    ctx.beginPath();
+    ctx.moveTo(j.x, y - r); ctx.lineTo(j.x + r * 0.35, y - r * 0.2); ctx.lineTo(j.x - r * 0.35, y - r * 0.2);
+    ctx.closePath(); ctx.fill();
+    if (Math.sin(time * 0.01 + j.ph * 3) > 0.92) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(j.x + r * 0.3, y - r, 2, 2);
+    }
+  }
+}
+
 // ── CAREER MODE: 25 levels, each one a target height ───────────
 const LEVEL_COUNT = 25;
 const LEVEL_TARGET = n => Math.round(150 * Math.pow(14000 / 150, (n - 1) / (LEVEL_COUNT - 1)) / 10) * 10;
@@ -2042,6 +2377,9 @@ function initGame() {
   zoneIdx = 0; zoneLap = 0; zoneFeel.grav = 1; zoneFeel.wind = 1;
   levelDoneT = 0;
   blaze = [];
+  lives = GAUNTLET_LIVES; checkpoint = null; invulnT = 0; turrets = []; bullets = [];
+  jewels = []; jewelScore = 0; jewelPlat = 0; for (const k in jewelSets) delete jewelSets[k];
+  platsSincePU = Math.floor(POWERUP_GAP / 2);
   applyDifficulty();
   warpFlash       = 0;
   resetTokens();
@@ -2134,7 +2472,7 @@ function updatePhysics(dt, ms) {
   }
 
   // Long fall: warp straight to the ground so a new climb starts fast
-  if (!player.onGround && player.vy > 0 && player.rocketTimer <= 0 && player.y < -300) {
+  if (mode !== 'gauntlet' && !player.onGround && player.vy > 0 && player.rocketTimer <= 0 && player.y < -300) {
     player.dropT = (player.dropT || 0) + ms;
     if (player.dropT > FALL_WARP_MS) {
       player.dropT = 0;
@@ -2232,7 +2570,7 @@ function updatePhysics(dt, ms) {
 
       // Landed on a rescue platform OR back on bare ground after a fall -
       // respawn fresh platforms above
-      if (p.isRescue || (p.isGround && player.peakY < -300)) {
+      if (mode !== 'gauntlet' && (p.isRescue || (p.isGround && player.peakY < -300))) {
         respawnFromY();
         return;
       }
@@ -2247,7 +2585,7 @@ function updatePhysics(dt, ms) {
   // ── Parachute logic ─────────────────────────────────────
   if (!player.onGround && player.vy > 0 && player.rocketTimer <= 0) {
     player.fallTimer += ms / 1000;
-    if (!player.chute && player.fallTimer >= CFG.CHUTE_DEPLOY_S) {
+    if (!player.chute && mode !== 'gauntlet' && player.fallTimer >= CFG.CHUTE_DEPLOY_S) {
       player.chute = true;
       audio.triggers.chuteOpen();
     }
@@ -2275,7 +2613,7 @@ function updatePhysics(dt, ms) {
     }
   }
 
-  updateZone();
+  if (mode !== 'gauntlet') updateZone();
   GHOST.record(ms);
 
   // ── Generate more world ahead ────────────────────────────
@@ -2314,9 +2652,13 @@ function render(time) {
   }
 
   // Parallax starfield + grid (screen-space, scrolls with cameraY)
-  drawStarfield(time);
-  drawClouds(time);
-  drawMotes(time);
+  if (mode === 'gauntlet') {
+    drawIndustrialBG(time);
+  } else {
+    drawStarfield(time);
+    drawClouds(time);
+    drawMotes(time);
+  }
   drawStreaks();
   drawShooters();
 
@@ -2338,6 +2680,7 @@ function render(time) {
     }
 
     if (p.solid) { drawSolid(p, time); continue; }
+    if (mode === 'gauntlet') { drawGirder(p, time); continue; }
 
     // Slow hue drift + breathing glow
     const hue = ((p.hue !== undefined ? p.hue : 230) + time * 0.01) % 360;
@@ -2380,6 +2723,8 @@ function render(time) {
   }
 
   drawFinishLine();
+  drawJewels(time);
+  drawTurrets(time);
   drawBlaze();
   GHOST.draw(time);
 
@@ -2406,6 +2751,7 @@ function render(time) {
     else drawParachute();
   }
 
+  if (mode === 'gauntlet' && invulnT > 0 && Math.floor(invulnT / 100) % 2) ctx.globalAlpha = 0.35;
   // Player - rocket shape during flight, box otherwise
   if (player.rocketTimer > 0) {
     const cx = player.x + player.w / 2;
@@ -2439,10 +2785,11 @@ function render(time) {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(player.x - 2, player.y - 2, player.w + 4, player.h + 4);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = ZONES[zoneIdx].player;
+    ctx.fillStyle = theme().player;
     ctx.fillRect(player.x, player.y, player.w, player.h);
   }
 
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   staticFx.draw(16.67 * worldRate());
@@ -2464,6 +2811,7 @@ function render(time) {
   ctx.shadowColor = 'rgba(0,0,0,0.75)';
   ctx.shadowBlur = 3;
   drawHUD();
+  drawLives();
   GHOST.hud();
   drawTokenArrow(time);
   drawBanner();
@@ -2572,7 +2920,14 @@ function drawHUD() {
   // Best
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '11px monospace';
-  if (mode === 'career') {
+  if (mode === 'gauntlet') {
+    ctx.fillText('best ' + bestGauntlet + 'm', W - 14, 46);
+  } else if (mode === 'jewels') {
+    ctx.fillText('best ' + bestJewels + ' jewels', W - 14, 46);
+    ctx.fillStyle = '#3d8bff';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('◆ ' + jewelScore, W - 14, 132);
+  } else if (mode === 'career') {
     ctx.fillText('top ' + LEVEL_TARGET(careerLevel) + 'm', W - 14, 46);
     ctx.fillStyle = '#6fb0ff';
     ctx.font = 'bold 14px monospace';
@@ -2667,7 +3022,7 @@ function drawMenu() {
   ctx.fillText('ASCEND', W / 2, H / 2 - 30);
   ctx.fillStyle = '#6fb0ff';
   ctx.font = 'bold 12px monospace';
-  ctx.fillText(mode === 'career' ? 'CAREER  LEVEL ' + careerLevel + '  REACH ' + LEVEL_TARGET(careerLevel) + 'm'
+  ctx.fillText(mode === 'gauntlet' ? 'RUN THE GAUNTLET' : mode === 'jewels' ? 'JEWELS MODE' : mode === 'career' ? 'CAREER  LEVEL ' + careerLevel + '  REACH ' + LEVEL_TARGET(careerLevel) + 'm'
     : mode === 'challenge' ? 'CHALLENGE MODE' : 'MARATHON MODE', W / 2, H / 2 - 54);
 
   ctx.fillStyle = CFG.UI_DIM;
@@ -2679,17 +3034,19 @@ function drawMenu() {
   ctx.font = 'bold 14px monospace';
   ctx.fillText('tap to start', W / 2, H / 2 + 56);
 
-  const menuBest = mode === 'challenge' ? bestChallenge : mode === 'career' ? careerCleared : best;
+  const menuBest = mode === 'challenge' ? bestChallenge : mode === 'career' ? careerCleared : mode === 'gauntlet' ? bestGauntlet : mode === 'jewels' ? bestJewels : best;
   if (menuBest > 0) {
     ctx.fillStyle = CFG.SCORE_COL;
     ctx.font = '11px monospace';
     ctx.fillText(mode === 'career' ? 'levels cleared: ' + menuBest + ' of ' + LEVEL_COUNT
-      : 'best: ' + menuBest + (mode === 'challenge' ? ' tokens' : 'm'), W / 2, H / 2 + 80);
+      : 'best: ' + menuBest + (mode === 'challenge' ? ' tokens' : mode === 'jewels' ? ' jewels' : 'm'), W / 2, H / 2 + 80);
   }
-  if (mode === 'challenge') {
+  if (mode === 'challenge' || mode === 'gauntlet' || mode === 'jewels') {
     ctx.fillStyle = CFG.UI_DIM;
     ctx.font = '11px monospace';
-    ctx.fillText('grab tokens in order: 1, 2, 3...', W / 2, H / 2 + 120);
+    ctx.fillText(mode === 'challenge' ? 'grab tokens in order: 1, 2, 3...'
+      : mode === 'gauntlet' ? 'three lives, no parachute, dodge the turrets'
+      : 'grab every jewel, full sets pay a bonus', W / 2, H / 2 + 120);
   }
   ctx.fillStyle = '#6fb0ff';
   ctx.font = '11px monospace';
@@ -2700,7 +3057,21 @@ function drawDead() {
   ctx.fillStyle = CFG.UI_TEXT;
   ctx.font = 'bold 26px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('FELL', W / 2, H / 2 - 24);
+  ctx.fillText(mode === 'gauntlet' ? 'GAME OVER' : 'FELL', W / 2, H / 2 - 24);
+  if (mode === 'gauntlet') {
+    ctx.fillStyle = CFG.SCORE_COL;
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText(score + 'm', W / 2, H / 2 + 4);
+    if (score >= bestGauntlet && score > 0) {
+      ctx.fillStyle = '#3d8bff';
+      ctx.font = '12px monospace';
+      ctx.fillText('new best!', W / 2, H / 2 + 24);
+    }
+    ctx.fillStyle = CFG.UI_DIM;
+    ctx.font = '12px monospace';
+    ctx.fillText('tap to run it again', W / 2, H / 2 + 50);
+    return;
+  }
 
   ctx.fillStyle = CFG.SCORE_COL;
   ctx.font = 'bold 20px monospace';
@@ -2736,6 +3107,8 @@ function loop(ts) {
     updateParticles(dt * wr);
     updateTrail();
     updateBlaze();
+    updateGauntlet(ms, wr);
+    updateJewels();
     if (Math.random() < wr) updateShooters();
     updateRockets(ms);
     updateSteadies(ms);
@@ -2758,7 +3131,7 @@ function loop(ts) {
 //  GLOBAL LEADERBOARD (ascend-backend on Railway)
 // ════════════════════════════════════════════════════════════
 const LB = {
-  open: false, api: null, timer: null, posted: 0, postedC: 0, postedK: 0,
+  open: false, api: null, timer: null, posted: 0, postedC: 0, postedK: 0, postedG: 0, postedJ: 0,
   name: localStorage.getItem('ascendName') || '',
   el: id => document.getElementById(id),
   clean(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9 _.-]/g, '').trim().slice(0, 12); },
@@ -2785,7 +3158,7 @@ const LB = {
       if (r.name === this.name) li.className = 'me';
       const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = (i + 1) + '.';
       const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
-      const sc = document.createElement('span'); sc.textContent = mode === 'career' ? 'LV ' + r.score : r.score + (mode === 'challenge' ? ' ⬡' : 'm');
+      const sc = document.createElement('span'); sc.textContent = mode === 'career' ? 'LV ' + r.score : r.score + (mode === 'challenge' ? ' ⬡' : mode === 'jewels' ? ' ◆' : 'm');
       li.append(rk, nm, sc);
       ol.appendChild(li);
     });
@@ -2808,6 +3181,8 @@ const LB = {
     if (best > 0 && best > this.posted) jobs.push(['climb', best]);
     if (bestChallenge > 0 && bestChallenge > this.postedC) jobs.push(['challenge', bestChallenge]);
     if (careerCleared > 0 && careerCleared > this.postedK) jobs.push(['career', careerCleared]);
+    if (bestGauntlet > 0 && bestGauntlet > this.postedG) jobs.push(['gauntlet', bestGauntlet]);
+    if (bestJewels > 0 && bestJewels > this.postedJ) jobs.push(['jewels', bestJewels]);
     for (const [m, val] of jobs) {
       try {
         const r = await fetch(api + '/scores', {
@@ -2818,10 +3193,12 @@ const LB = {
         if (!j.ok) continue;
         if (m === 'climb') { this.posted = val; localStorage.setItem('ascendPosted', String(val)); }
         else if (m === 'challenge') { this.postedC = val; localStorage.setItem('ascendPostedC', String(val)); }
-        else { this.postedK = val; localStorage.setItem('ascendPostedK', String(val)); }
+        else if (m === 'career') { this.postedK = val; localStorage.setItem('ascendPostedK', String(val)); }
+        else if (m === 'gauntlet') { this.postedG = val; localStorage.setItem('ascendPostedG', String(val)); }
+        else { this.postedJ = val; localStorage.setItem('ascendPostedJ', String(val)); }
         if (this.open && m === mode) {
           this.render(j.scores || []);
-          this.status('posted ' + (m === 'career' ? 'level ' + val : val + (m === 'challenge' ? ' tokens' : 'm')) + ', rank ' + j.rank);
+          this.status('posted ' + (m === 'career' ? 'level ' + val : val + (m === 'challenge' ? ' tokens' : m === 'jewels' ? ' jewels' : 'm')) + ', rank ' + j.rank);
         }
       } catch (e) {}
     }
@@ -2832,7 +3209,9 @@ const LB = {
     this.el('modeClimb').className = m === 'climb' ? 'on' : '';
     this.el('modeChallenge').className = m === 'challenge' ? 'on' : '';
     this.el('modeCareer').className = m === 'career' ? 'on' : '';
-    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : m === 'career' ? 'CAREER' : 'MARATHON') + ' LEADERBOARD';
+    this.el('modeGauntlet').className = m === 'gauntlet' ? 'on' : '';
+    this.el('modeJewels').className = m === 'jewels' ? 'on' : '';
+    this.el('lbTitle').textContent = ({ challenge: 'CHALLENGE', career: 'CAREER', gauntlet: 'GAUNTLET', jewels: 'JEWELS' }[m] || 'MARATHON') + ' LEADERBOARD';
     this.syncLevel();
   },
   syncLevel() {
@@ -2862,6 +3241,8 @@ const LB = {
     this.posted = sameName ? n : 0;
     this.postedC = sameName ? parseInt(localStorage.getItem('ascendPostedC') || '0') : 0;
     this.postedK = sameName ? parseInt(localStorage.getItem('ascendPostedK') || '0') : 0;
+    this.postedG = sameName ? parseInt(localStorage.getItem('ascendPostedG') || '0') : 0;
+    this.postedJ = sameName ? parseInt(localStorage.getItem('ascendPostedJ') || '0') : 0;
     this.setMode(mode);
     document.querySelectorAll('#lbOpts button').forEach(b => {
       const k = b.dataset.opt;
@@ -2888,7 +3269,7 @@ const LB = {
     };
     this.el('lvPrev').addEventListener('click', () => pickLevel(-1));
     this.el('lvNext').addEventListener('click', () => pickLevel(1));
-    ['modeClimb', 'modeChallenge', 'modeCareer'].forEach(id => this.el(id).addEventListener('click', e => {
+    ['modeClimb', 'modeChallenge', 'modeCareer', 'modeGauntlet', 'modeJewels'].forEach(id => this.el(id).addEventListener('click', e => {
       const m = e.currentTarget.dataset.mode;
       if (m === mode) return;
       GHOST.save();
@@ -2908,12 +3289,12 @@ const LB = {
     this.el('lbSave').addEventListener('click', async () => {
       const nm = this.clean(this.el('lbName').value);
       if (!nm) { this.status('name needs letters or numbers'); return; }
-      if (nm !== this.name) { this.posted = 0; this.postedC = 0; this.postedK = 0; }
+      if (nm !== this.name) { this.posted = 0; this.postedC = 0; this.postedK = 0; this.postedG = 0; this.postedJ = 0; }
       this.name = nm;
       this.el('lbName').value = nm;
       localStorage.setItem('ascendName', nm);
       localStorage.setItem('ascendPostedName', nm);
-      if (best > 0 || bestChallenge > 0 || careerCleared > 0) { this.status('posting'); await this.post(); }
+      if (best > 0 || bestChallenge > 0 || careerCleared > 0 || bestGauntlet > 0 || bestJewels > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
     document.addEventListener('visibilitychange', () => {

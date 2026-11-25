@@ -3,7 +3,7 @@ const http = require('http');
 const { createClient } = require('redis');
 
 const PORT = process.env.PORT || 8080;
-const KEYS = { climb: 'ascend:scores', challenge: 'ascend:scores:challenge', career: 'ascend:scores:career' };
+const KEYS = { climb: 'ascend:scores', challenge: 'ascend:scores:challenge', career: 'ascend:scores:career', gauntlet: 'ascend:scores:gauntlet', jewels: 'ascend:scores:jewels' };
 const keyFor = m => KEYS[m] || KEYS.climb;
 const MAX_SCORE = 1000000;
 const TOP_N = 25;
