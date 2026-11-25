@@ -9,7 +9,15 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.5 - SHRINK, GROW, BITFIELD STATIC        ║
+║  CURRENT BUILD : v1.6 - CAREER, SLOW-MO, TRAIL BLAZER        ║
+║  v1.6: CAREER mode, 25 levels, target heights grow from 150m ║
+║        to about 14000m (LEVEL_TARGET), harder each level     ║
+║        (more steel, more movers, wider gaps). Unlocks saved, ║
+║        level picker in the ☰ overlay, own leaderboard.       ║
+║        Slow-mo pickup: world runs at SLOWMO_RATE for        ║
+║        SLOWMO_TIME, player at full speed. Trail Blazer       ║
+║        pickup: thick striped trail behind you for TRAIL_TIME ║
+║        in a random palette (rainbow, ocean, fire, neon...).  ║
 ║  v1.5: shrink pickup (smaller body) and grow pickup (bigger  ║
 ║        body), SIZE_TIME each, they cancel each other. Static ║
 ║        pickup throws a random Bitfield Synth pattern over    ║
@@ -145,9 +153,15 @@
     border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
   }
   #lbOpts button.on { background: #3d8bff; color: #fff; }
+  #lbLevel { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; height: 42px; }
+  #lbLevel button {
+    width: 48px; height: 42px; font: bold 16px monospace; border-radius: 6px;
+    border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
+  }
+  #lvText { flex: 1; text-align: center; font: bold 13px monospace; color: #d8e6ff; white-space: nowrap; overflow: hidden; }
   #lbModes { display: flex; gap: 8px; margin-bottom: 16px; }
   #lbModes button {
-    flex: 1; padding: 10px 0; font: bold 13px monospace; border-radius: 6px;
+    flex: 1; padding: 10px 0; font: bold 11px monospace; border-radius: 6px;
     border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
   }
   #lbModes button.on { background: #3d8bff; color: #fff; }
@@ -171,6 +185,13 @@
   <div id="lbModes">
     <button id="modeClimb" data-mode="climb">MARATHON</button>
     <button id="modeChallenge" data-mode="challenge">CHALLENGE</button>
+    <button id="modeCareer" data-mode="career">CAREER</button>
+  </div>
+  <label>CAREER LEVEL</label>
+  <div id="lbLevel">
+    <button id="lvPrev">◀</button>
+    <span id="lvText">LEVEL 1</span>
+    <button id="lvNext">▶</button>
   </div>
   <label>OPTIONS</label>
   <div id="lbOpts">
@@ -331,6 +352,7 @@ let worldGenBottom = 800; // lowest rescue platform generated
 
 function rand(min, max) { return min + Math.random() * (max - min); }
 const SOLID_CHANCE = 0.13;
+const DIFF = { solid: SOLID_CHANCE, mover: 0.15, gapMax: 90 };
 
 function addGround() {
   platforms.push({ x: 0, y: 0, w: W, h: 40, isGround: true });
@@ -339,15 +361,15 @@ function addGround() {
 // Generate platforms upward until we've covered up to targetY (more negative = higher)
 function generateUpTo(targetY) {
   while (highestPlatY > targetY) {
-    const gap = rand(55, 90);
+    const gap = rand(55, DIFF.gapMax);
     highestPlatY -= gap;
     const pw = rand(CFG.PLAT_MIN_W, CFG.PLAT_MAX_W);
     const px = rand(0, W - pw);
     const np = { x: px, y: highestPlatY, w: pw, h: CFG.PLAT_H, hue: Math.floor(Math.random() * 360) };
     // ~15% of platforms drift left-right (harder to land)
-    if (Math.random() < 0.15) {
+    if (Math.random() < DIFF.mover) {
       np.vx = (0.6 + Math.random() * 0.9) * (Math.random() < 0.5 ? 1 : -1);
-    } else if (highestPlatY < -400 && Math.random() < SOLID_CHANCE) {
+    } else if (highestPlatY < -400 && Math.random() < DIFF.solid) {
       // Solid steel block: cannot be jumped through from below
       np.solid = true;
       np.h = 16;
@@ -649,7 +671,7 @@ function drawZoneSky() {
 // ════════════════════════════════════════════════════════════
 const GHOST = {
   rec: [], recT: 0, runT: 0, play: null, playBest: 0, dirty: false,
-  key() { return 'ascendGhostRun_' + mode; },
+  key() { return 'ascendGhostRun_' + mode + (mode === 'career' ? '_' + careerLevel : ''); },
   metric() { return mode === 'challenge' ? tokenNeed - 1 : score; },
   load() {
     this.play = null; this.playBest = 0;
@@ -733,6 +755,9 @@ function initPlayer() {
     sizeKind:    '',
     sizeTime:    0,
     staticTime:  0,
+    slowTime:    0,
+    trailTime:   0,
+    trailPal:    'rainbow',
     hasGlider:   false,
     gliderTime:  0,
   };
@@ -741,7 +766,7 @@ function initPlayer() {
 // ════════════════════════════════════════════════════════════
 //  SCORE
 // ════════════════════════════════════════════════════════════
-let mode = (localStorage.getItem('ascendMode') === 'challenge') ? 'challenge' : 'climb';
+let mode = ['challenge', 'career'].includes(localStorage.getItem('ascendMode')) ? localStorage.getItem('ascendMode') : 'climb';
 let bestChallenge = parseInt(localStorage.getItem('bestChallenge') || '0');
 let score = 0;      // max height in "meters" (world units / 10)
 let best  = parseInt(localStorage.getItem('best') || '0');
@@ -852,6 +877,8 @@ const audio = {
     shrink:      () => { if (SFX.ok('shrink')) SFX.tone('square', 900, 300, 0.3, 0.1); buzz(20); },
     grow:        () => { if (SFX.ok('grow')) SFX.tone('square', 150, 450, 0.35, 0.12); buzz([40, 20, 60]); },
     staticOn:    () => { if (SFX.ok('staticOn')) { SFX.noise(0.6, 0.35, 6000); SFX.tone('sawtooth', 60, 2000, 0.5, 0.06); } buzz([20, 20, 20, 20, 20, 20, 60]); },
+    slowmo:      () => { if (SFX.ok('slowmo')) SFX.tone('sine', 600, 90, 0.9, 0.14); buzz([100, 60, 100]); },
+    trail:       () => { if (SFX.ok('trail')) [523, 659, 784, 988, 1175, 1319].forEach((f, i) => SFX.tone('square', f, 0, 0.07, 0.07, i * 0.04)); buzz(40); },
     zone:        () => { if (SFX.ok('zone')) [392, 494, 587, 784].forEach((f, i) => SFX.tone('triangle', f, 0, 0.6, 0.07, i * 0.12)); buzz([50, 60, 50, 60, 120]); },
   }
 };
@@ -1425,7 +1452,7 @@ function drawSteadies(time) {
 
 // ── SHRINK / GROW / STATIC PICKUPS ─────────────────────────────
 let oddities = [];
-const ODD_CHANCE = { shrink: 0.025, grow: 0.025, static: 0.025 };
+const ODD_CHANCE = { shrink: 0.025, grow: 0.025, static: 0.025, slowmo: 0.025, trail: 0.025 };
 const SIZE_TIME   = 30000;   // ms a shrink or grow lasts
 const STATIC_TIME = 10000;   // ms the bitfield static covers the screen
 const SIZE_SCALE  = { shrink: 0.6, grow: 1.55 };
@@ -1434,7 +1461,7 @@ function maybeSpawnOddity(p) {
   if (p.vx) return;
   const r = Math.random();
   let kind = null, acc = 0;
-  for (const k of ['shrink', 'grow', 'static']) { acc += ODD_CHANCE[k]; if (r < acc) { kind = k; break; } }
+  for (const k of ['shrink', 'grow', 'static', 'slowmo', 'trail']) { acc += ODD_CHANCE[k]; if (r < acc) { kind = k; break; } }
   if (!kind) return;
   oddities.push({ kind, x: p.x + p.w / 2, y: p.y - 14, taken: false, ph: Math.random() * Math.PI * 2 });
 }
@@ -1457,7 +1484,17 @@ function updateOddities(ms) {
     const dx = pcx - o.x, dy = pcy - o.y;
     if (dx * dx + dy * dy > reach * reach) continue;
     o.taken = true;
-    if (o.kind === 'static') {
+    if (o.kind === 'slowmo') {
+      player.slowTime = SLOWMO_TIME;
+      showBanner('SLOW-MO');
+      audio.triggers.slowmo();
+    } else if (o.kind === 'trail') {
+      const keys = Object.keys(TRAIL_PALETTES);
+      player.trailPal = keys[Math.floor(Math.random() * keys.length)];
+      player.trailTime = TRAIL_TIME;
+      showBanner('TRAIL BLAZER');
+      audio.triggers.trail();
+    } else if (o.kind === 'static') {
       player.staticTime = STATIC_TIME;
       staticFx.start();
       showBanner('STATIC!');
@@ -1488,6 +1525,14 @@ function updateOddities(ms) {
       audio.triggers.spent();
     }
   }
+  if (player.slowTime > 0) {
+    player.slowTime -= ms;
+    if (player.slowTime <= 0) { player.slowTime = 0; showBanner('BACK TO FULL SPEED'); audio.triggers.spent(); }
+  }
+  if (player.trailTime > 0) {
+    player.trailTime -= ms;
+    if (player.trailTime <= 0) player.trailTime = 0;
+  }
   if (player.staticTime > 0) {
     player.staticTime -= ms;
     if (player.staticTime <= 0) {
@@ -1507,6 +1552,24 @@ function drawOddities(time) {
     ctx.fillStyle = o.kind === 'static' ? 'hsl(' + ((time * 0.3) % 360) + ',100%,60%)' : '#3d8bff';
     ctx.beginPath(); ctx.arc(o.x, y, 14, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
+    if (o.kind === 'slowmo') {
+      // hourglass
+      ctx.fillStyle = '#e8f1ff';
+      ctx.beginPath(); ctx.moveTo(o.x - 7, y - 9); ctx.lineTo(o.x + 7, y - 9); ctx.lineTo(o.x, y); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(o.x - 7, y + 9); ctx.lineTo(o.x + 7, y + 9); ctx.lineTo(o.x, y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#1b2f6b';
+      ctx.fillRect(o.x - 8, y - 11, 16, 2); ctx.fillRect(o.x - 8, y + 9, 16, 2);
+      ctx.fillStyle = '#ffd21a';
+      ctx.beginPath(); ctx.moveTo(o.x - 4, y + 8); ctx.lineTo(o.x + 4, y + 8); ctx.lineTo(o.x, y + 3); ctx.closePath(); ctx.fill();
+      continue;
+    }
+    if (o.kind === 'trail') {
+      const pal = TRAIL_PALETTES.rainbow;
+      for (let k = 0; k < 6; k++) { ctx.fillStyle = pal[k]; ctx.fillRect(o.x - 10, y - 9 + k * 3, 14, 3); }
+      ctx.fillStyle = '#e8f1ff'; ctx.fillRect(o.x + 4, y - 6, 7, 12);
+      ctx.strokeStyle = '#1b2f6b'; ctx.lineWidth = 1.5; ctx.strokeRect(o.x + 4, y - 6, 7, 12);
+      continue;
+    }
     if (o.kind === 'static') {
       for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 4; gx++) {
         ctx.fillStyle = 'hsl(' + (((gx * 7 ^ gy * 13) * 40 + time * 0.4) % 360) + ',100%,55%)';
@@ -1608,6 +1671,124 @@ const staticFx = {
     ctx.restore();
   },
 };
+
+// ── CAREER MODE: 25 levels, each one a target height ───────────
+const LEVEL_COUNT = 25;
+const LEVEL_TARGET = n => Math.round(150 * Math.pow(14000 / 150, (n - 1) / (LEVEL_COUNT - 1)) / 10) * 10;
+let careerLevel    = Math.max(1, parseInt(localStorage.getItem('ascendCareerLevel') || '1'));
+let careerUnlocked = Math.max(1, parseInt(localStorage.getItem('ascendCareerUnlocked') || '1'));
+let careerCleared  = parseInt(localStorage.getItem('ascendCareerCleared') || '0');
+let levelDoneT = 0;
+careerLevel = Math.min(careerLevel, careerUnlocked, LEVEL_COUNT);
+
+function applyDifficulty() {
+  if (mode === 'career') {
+    const k = (careerLevel - 1) / (LEVEL_COUNT - 1);
+    DIFF.solid = 0.06 + k * 0.16;
+    DIFF.mover = 0.10 + k * 0.18;
+    DIFF.gapMax = 80 + k * 30;
+  } else {
+    DIFF.solid = SOLID_CHANCE; DIFF.mover = 0.15; DIFF.gapMax = 90;
+  }
+}
+
+function checkLevel(ms) {
+  if (mode !== 'career') return;
+  if (levelDoneT > 0) {
+    levelDoneT -= ms;
+    if (levelDoneT <= 0) {
+      levelDoneT = 0;
+      if (careerLevel < LEVEL_COUNT) {
+        careerLevel++;
+        localStorage.setItem('ascendCareerLevel', careerLevel);
+        LB.syncLevel();
+        setState(STATE.PLAYING);
+      } else {
+        state = STATE.MENU;
+        initGame();
+      }
+    }
+    return;
+  }
+  if (score >= LEVEL_TARGET(careerLevel)) {
+    levelDoneT = 2600;
+    if (careerLevel > careerCleared) {
+      careerCleared = careerLevel;
+      localStorage.setItem('ascendCareerCleared', careerCleared);
+      LB.queue();
+    }
+    if (careerLevel + 1 > careerUnlocked && careerLevel < LEVEL_COUNT) {
+      careerUnlocked = careerLevel + 1;
+      localStorage.setItem('ascendCareerUnlocked', careerUnlocked);
+    }
+    GHOST.dirty = true; GHOST.save();
+    showBanner(careerLevel === LEVEL_COUNT ? 'CAREER COMPLETE!' : 'LEVEL ' + careerLevel + ' CLEAR');
+    audio.triggers.milestone();
+    for (let i = 0; i < 40; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 3 + Math.random() * 7;
+      particles.push({ x: player.x + player.w / 2, y: player.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 1, decay: 0.015, size: 2 + Math.random() * 4, hue: 200 + Math.random() * 40, type: 'splash' });
+    }
+  }
+}
+
+function drawFinishLine() {
+  if (mode !== 'career') return;
+  const y = -LEVEL_TARGET(careerLevel) * 10;
+  if (y - cameraY < -30 || y - cameraY > H + 30) return;
+  const sq = 10;
+  for (let i = 0; i * sq < W; i++) for (let r = 0; r < 2; r++) {
+    ctx.fillStyle = (i + r) % 2 ? '#3d8bff' : '#ffffff';
+    ctx.fillRect(i * sq, y - 10 + r * sq, sq, sq);
+  }
+  ctx.fillStyle = '#1b2f6b';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('LEVEL ' + careerLevel + ' TOP', W / 2, y - 16);
+}
+
+// ── SLOW-MO: the world slows down, you do not ──────────────────
+const SLOWMO_TIME = 15000;
+const SLOWMO_RATE = 0.35;
+function worldRate() { return player && player.slowTime > 0 ? SLOWMO_RATE : 1; }
+
+// ── TRAIL BLAZER: striped trail out the back wherever you go ──
+const TRAIL_TIME = 20000;
+const TRAIL_PALETTES = {
+  rainbow: ['#ff2a2a', '#ff9a1a', '#ffe81a', '#33e04a', '#2a9bff', '#8a4bff'],
+  ocean:   ['#0b2a6e', '#1b4fbf', '#3d8bff', '#6fb0ff', '#a9d4ff', '#e3f1ff'],
+  fire:    ['#5a0a00', '#b31d00', '#ff4a00', '#ff8c1a', '#ffd21a', '#fff3b0'],
+  neon:    ['#ff2bd6', '#b02bff', '#3d8bff', '#1affd5', '#3dff6a', '#eaff1a'],
+  sunset:  ['#2a1b5e', '#6b2a8a', '#c23b7a', '#ff6a5a', '#ffa84a', '#ffe08a'],
+  mint:    ['#0a4a3a', '#138a6a', '#2ad1a0', '#7af0c8', '#c8fff0', '#3d8bff'],
+};
+let blaze = [];
+function updateBlaze() {
+  if (!player || player.trailTime <= 0) { if (blaze.length) blaze = blaze.filter(b => (b.life -= 0.02) > 0); return; }
+  const pal = TRAIL_PALETTES[player.trailPal];
+  const x = player.x + player.w / 2, y = player.y + player.h / 2;
+  const last = blaze[blaze.length - 1];
+  const steps = last ? Math.min(12, Math.ceil(Math.hypot(x - last.x, y - last.y) / 3)) : 1;
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    blaze.push({ x: last ? last.x + (x - last.x) * f : x, y: last ? last.y + (y - last.y) * f : y, life: 1, pal });
+  }
+  for (const b of blaze) b.life -= 0.006;
+  blaze = blaze.filter(b => b.life > 0);
+  if (blaze.length > 900) blaze.splice(0, blaze.length - 900);
+}
+function drawBlaze() {
+  const band = 3;
+  for (const b of blaze) {
+    if (b.y - cameraY < -30 || b.y - cameraY > H + 30) continue;
+    ctx.globalAlpha = Math.min(1, b.life * 1.4);
+    for (let k = 0; k < 6; k++) {
+      ctx.fillStyle = b.pal[k];
+      ctx.fillRect(b.x - 3, b.y - 9 + k * band, 6, band);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
 
 function maybeSpawnRocket(p) {
   if (Math.random() < ROCKET_CHANCE) {
@@ -1859,6 +2040,9 @@ function initGame() {
   tokenNeed       = 1;
   tokenWrongT     = 0;
   zoneIdx = 0; zoneLap = 0; zoneFeel.grav = 1; zoneFeel.wind = 1;
+  levelDoneT = 0;
+  blaze = [];
+  applyDifficulty();
   warpFlash       = 0;
   resetTokens();
   addGround();
@@ -2195,6 +2379,8 @@ function render(time) {
     }
   }
 
+  drawFinishLine();
+  drawBlaze();
   GHOST.draw(time);
 
   // Player comet trail (world space, under everything else)
@@ -2259,7 +2445,14 @@ function render(time) {
 
   ctx.restore();
 
-  staticFx.draw(16.67);
+  staticFx.draw(16.67 * worldRate());
+  if (player && player.slowTime > 0) {
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.75);
+    g.addColorStop(0, 'rgba(61,139,255,0)');
+    g.addColorStop(1, 'rgba(61,139,255,0.35)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   if (warpFlash > 0) {
     ctx.globalAlpha = warpFlash;
@@ -2379,7 +2572,15 @@ function drawHUD() {
   // Best
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '11px monospace';
-  if (mode === 'challenge') {
+  if (mode === 'career') {
+    ctx.fillText('top ' + LEVEL_TARGET(careerLevel) + 'm', W - 14, 46);
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('LEVEL ' + careerLevel, W - 14, 132);
+    const lp = Math.min(1, score / LEVEL_TARGET(careerLevel));
+    ctx.fillStyle = '#16223f'; ctx.fillRect(W - 74, 138, 60, 5);
+    ctx.fillStyle = '#3d8bff'; ctx.fillRect(W - 74, 138, 60 * lp, 5);
+  } else if (mode === 'challenge') {
     ctx.fillText('best ' + bestChallenge + ' tokens', W - 14, 46);
     ctx.fillStyle = '#6fb0ff';
     ctx.font = 'bold 14px monospace';
@@ -2411,6 +2612,20 @@ function drawHUD() {
     ctx.fillText((player.sizeKind === 'shrink' ? 'shrunk ' : 'grown ') + Math.ceil(player.sizeTime / 1000) + 's', 14, 146);
     ctx.fillStyle = '#16223f'; ctx.fillRect(14, 151, 60, 5);
     ctx.fillStyle = '#3d8bff'; ctx.fillRect(14, 151, 60 * player.sizeTime / SIZE_TIME, 5);
+    ctx.textAlign = 'right';
+  }
+  if (player && player.slowTime > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('slow-mo ' + Math.ceil(player.slowTime / 1000) + 's', 14, 190);
+    ctx.textAlign = 'right';
+  }
+  if (player && player.trailTime > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = TRAIL_PALETTES[player.trailPal][2];
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('trail ' + Math.ceil(player.trailTime / 1000) + 's', 14, 208);
     ctx.textAlign = 'right';
   }
   if (player && player.staticTime > 0) {
@@ -2452,7 +2667,8 @@ function drawMenu() {
   ctx.fillText('ASCEND', W / 2, H / 2 - 30);
   ctx.fillStyle = '#6fb0ff';
   ctx.font = 'bold 12px monospace';
-  ctx.fillText(mode === 'challenge' ? 'CHALLENGE MODE' : 'MARATHON MODE', W / 2, H / 2 - 54);
+  ctx.fillText(mode === 'career' ? 'CAREER  LEVEL ' + careerLevel + '  REACH ' + LEVEL_TARGET(careerLevel) + 'm'
+    : mode === 'challenge' ? 'CHALLENGE MODE' : 'MARATHON MODE', W / 2, H / 2 - 54);
 
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '13px monospace';
@@ -2463,11 +2679,12 @@ function drawMenu() {
   ctx.font = 'bold 14px monospace';
   ctx.fillText('tap to start', W / 2, H / 2 + 56);
 
-  const menuBest = mode === 'challenge' ? bestChallenge : best;
+  const menuBest = mode === 'challenge' ? bestChallenge : mode === 'career' ? careerCleared : best;
   if (menuBest > 0) {
     ctx.fillStyle = CFG.SCORE_COL;
     ctx.font = '11px monospace';
-    ctx.fillText('best: ' + menuBest + (mode === 'challenge' ? ' tokens' : 'm'), W / 2, H / 2 + 80);
+    ctx.fillText(mode === 'career' ? 'levels cleared: ' + menuBest + ' of ' + LEVEL_COUNT
+      : 'best: ' + menuBest + (mode === 'challenge' ? ' tokens' : 'm'), W / 2, H / 2 + 80);
   }
   if (mode === 'challenge') {
     ctx.fillStyle = CFG.UI_DIM;
@@ -2504,6 +2721,7 @@ function drawDead() {
 //  GAME LOOP
 // ════════════════════════════════════════════════════════════
 let lastTs = 0;
+let worldClock = 0;
 
 function loop(ts) {
   const ms = Math.min(ts - lastTs, 50); // cap spike
@@ -2511,23 +2729,27 @@ function loop(ts) {
   lastTs = ts;
 
   if (state === STATE.PLAYING && !LB.open) {
+    const wr = worldRate();
+    worldClock += ms * wr;
     updatePhysics(dt, ms);
     updateCoins();
-    updateParticles(dt);
+    updateParticles(dt * wr);
     updateTrail();
-    updateShooters();
+    updateBlaze();
+    if (Math.random() < wr) updateShooters();
     updateRockets(ms);
     updateSteadies(ms);
     updateOddities(ms);
     updateGliders();
     updateGems();
     updateTokens(ms);
-    updateMovingPlatforms(dt);
-    updateWind(ms);
-    updateStreaks();
+    updateMovingPlatforms(dt * wr);
+    updateWind(ms * wr);
+    if (Math.random() < wr) updateStreaks();
     checkMilestones();
+    checkLevel(ms);
   }
-  render(ts);
+  render(state === STATE.PLAYING ? worldClock : ts);
 
   requestAnimationFrame(loop);
 }
@@ -2536,7 +2758,7 @@ function loop(ts) {
 //  GLOBAL LEADERBOARD (ascend-backend on Railway)
 // ════════════════════════════════════════════════════════════
 const LB = {
-  open: false, api: null, timer: null, posted: 0, postedC: 0,
+  open: false, api: null, timer: null, posted: 0, postedC: 0, postedK: 0,
   name: localStorage.getItem('ascendName') || '',
   el: id => document.getElementById(id),
   clean(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9 _.-]/g, '').trim().slice(0, 12); },
@@ -2563,7 +2785,7 @@ const LB = {
       if (r.name === this.name) li.className = 'me';
       const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = (i + 1) + '.';
       const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
-      const sc = document.createElement('span'); sc.textContent = r.score + (mode === 'challenge' ? ' ⬡' : 'm');
+      const sc = document.createElement('span'); sc.textContent = mode === 'career' ? 'LV ' + r.score : r.score + (mode === 'challenge' ? ' ⬡' : 'm');
       li.append(rk, nm, sc);
       ol.appendChild(li);
     });
@@ -2585,6 +2807,7 @@ const LB = {
     const jobs = [];
     if (best > 0 && best > this.posted) jobs.push(['climb', best]);
     if (bestChallenge > 0 && bestChallenge > this.postedC) jobs.push(['challenge', bestChallenge]);
+    if (careerCleared > 0 && careerCleared > this.postedK) jobs.push(['career', careerCleared]);
     for (const [m, val] of jobs) {
       try {
         const r = await fetch(api + '/scores', {
@@ -2594,10 +2817,11 @@ const LB = {
         const j = await r.json();
         if (!j.ok) continue;
         if (m === 'climb') { this.posted = val; localStorage.setItem('ascendPosted', String(val)); }
-        else { this.postedC = val; localStorage.setItem('ascendPostedC', String(val)); }
+        else if (m === 'challenge') { this.postedC = val; localStorage.setItem('ascendPostedC', String(val)); }
+        else { this.postedK = val; localStorage.setItem('ascendPostedK', String(val)); }
         if (this.open && m === mode) {
           this.render(j.scores || []);
-          this.status('posted ' + val + (m === 'challenge' ? ' tokens' : 'm') + ', rank ' + j.rank);
+          this.status('posted ' + (m === 'career' ? 'level ' + val : val + (m === 'challenge' ? ' tokens' : 'm')) + ', rank ' + j.rank);
         }
       } catch (e) {}
     }
@@ -2607,7 +2831,13 @@ const LB = {
     localStorage.setItem('ascendMode', m);
     this.el('modeClimb').className = m === 'climb' ? 'on' : '';
     this.el('modeChallenge').className = m === 'challenge' ? 'on' : '';
-    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : 'MARATHON') + ' LEADERBOARD';
+    this.el('modeCareer').className = m === 'career' ? 'on' : '';
+    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : m === 'career' ? 'CAREER' : 'MARATHON') + ' LEADERBOARD';
+    this.syncLevel();
+  },
+  syncLevel() {
+    this.el('lvText').textContent = 'LEVEL ' + careerLevel + '  ' + LEVEL_TARGET(careerLevel) + 'm';
+    this.el('lbLevel').style.opacity = mode === 'career' ? '1' : '0.45';
   },
   queue() {
     clearTimeout(this.timer);
@@ -2631,6 +2861,7 @@ const LB = {
     const sameName = localStorage.getItem('ascendPostedName') === this.name;
     this.posted = sameName ? n : 0;
     this.postedC = sameName ? parseInt(localStorage.getItem('ascendPostedC') || '0') : 0;
+    this.postedK = sameName ? parseInt(localStorage.getItem('ascendPostedK') || '0') : 0;
     this.setMode(mode);
     document.querySelectorAll('#lbOpts button').forEach(b => {
       const k = b.dataset.opt;
@@ -2644,7 +2875,20 @@ const LB = {
         if (k === 'buzz' && SETTINGS.buzz) buzz(40);
       });
     });
-    ['modeClimb', 'modeChallenge'].forEach(id => this.el(id).addEventListener('click', e => {
+    const pickLevel = d => {
+      const nl = Math.max(1, Math.min(careerUnlocked, LEVEL_COUNT, careerLevel + d));
+      if (nl === careerLevel && mode === 'career') { if (d > 0 && careerLevel >= careerUnlocked) this.status('clear level ' + careerLevel + ' to unlock the next'); return; }
+      GHOST.save();
+      careerLevel = nl;
+      localStorage.setItem('ascendCareerLevel', careerLevel);
+      if (mode !== 'career') { this.setMode('career'); this.status('loading'); this.load(); }
+      this.syncLevel();
+      state = STATE.MENU;
+      initGame();
+    };
+    this.el('lvPrev').addEventListener('click', () => pickLevel(-1));
+    this.el('lvNext').addEventListener('click', () => pickLevel(1));
+    ['modeClimb', 'modeChallenge', 'modeCareer'].forEach(id => this.el(id).addEventListener('click', e => {
       const m = e.currentTarget.dataset.mode;
       if (m === mode) return;
       GHOST.save();
@@ -2664,12 +2908,12 @@ const LB = {
     this.el('lbSave').addEventListener('click', async () => {
       const nm = this.clean(this.el('lbName').value);
       if (!nm) { this.status('name needs letters or numbers'); return; }
-      if (nm !== this.name) { this.posted = 0; this.postedC = 0; }
+      if (nm !== this.name) { this.posted = 0; this.postedC = 0; this.postedK = 0; }
       this.name = nm;
       this.el('lbName').value = nm;
       localStorage.setItem('ascendName', nm);
       localStorage.setItem('ascendPostedName', nm);
-      if (best > 0 || bestChallenge > 0) { this.status('posting'); await this.post(); }
+      if (best > 0 || bestChallenge > 0 || careerCleared > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
     document.addEventListener('visibilitychange', () => {
