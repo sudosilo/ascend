@@ -9,7 +9,14 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.1 - GLIDER TIME LIMIT                    ║
+║  CURRENT BUILD : v1.2 - CHALLENGE MODE                       ║
+║  v1.2: mode picker in the ☰ overlay (CLIMB / CHALLENGE).     ║
+║        Challenge: numbered tokens on every third platform,   ║
+║        must be taken in order. Wrong token flashes red and   ║
+║        an edge arrow points to the one you need. Platforms  ║
+║        are not culled in challenge so you can drop back.    ║
+║        Falling to the ground rebuilds the world from the    ║
+║        next needed token. Separate leaderboard per mode.    ║
 ║  v1.1: glider burns out after 10s of flight (GLIDER_TIME),  ║
 ║        HUD shows seconds left plus a blue bar.              ║
 ║  v1.0: ☰ button upper left opens a left side overlay with   ║
@@ -117,6 +124,12 @@
   }
   #lbSave { background: #3d8bff; color: #fff; }
   #lbClose { background: transparent; color: #6fb0ff; }
+  #lbModes { display: flex; gap: 8px; margin-bottom: 16px; }
+  #lbModes button {
+    flex: 1; padding: 10px 0; font: bold 13px monospace; border-radius: 6px;
+    border: 1px solid #3d8bff; background: transparent; color: #6fb0ff;
+  }
+  #lbModes button.on { background: #3d8bff; color: #fff; }
   #lbStatus { min-height: 18px; margin: 10px 0; font-size: 11px; color: #8aa0c8; }
   #lbList { list-style: none; }
   #lbList li {
@@ -132,7 +145,13 @@
 <canvas id="c"></canvas>
 <button id="lbBtn" aria-label="leaderboard">☰</button>
 <div id="lbPanel">
-  <h2>LEADERBOARD</h2>
+  <h2>ASCEND</h2>
+  <label>MODE</label>
+  <div id="lbModes">
+    <button id="modeClimb" data-mode="climb">CLIMB</button>
+    <button id="modeChallenge" data-mode="challenge">CHALLENGE</button>
+  </div>
+  <h2 id="lbTitle">LEADERBOARD</h2>
   <label for="lbName">YOUR NAME</label>
   <input id="lbName" maxlength="12" autocomplete="off" spellcheck="false">
   <button id="lbSave">SAVE NAME AND POST BEST</button>
@@ -303,6 +322,7 @@ function generateUpTo(targetY) {
     maybeSpawnRocket(np);
     maybeSpawnGlider(np);
     maybeSpawnGem(np);
+    maybeSpawnToken(np);
   }
 }
 
@@ -319,6 +339,7 @@ function generateBelow(bottomY) {
 
 // Dissolve platforms that have scrolled off the BOTTOM of the screen (behind the climber)
 function cullPlatforms() {
+  if (mode === 'challenge') return;   // keep the whole tower so you can drop back for a token
   const bottomEdge = cameraY + H + 100; // 100px grace below screen bottom
   platforms = platforms.filter(p => p.y <= bottomEdge || p.isGround || p.isRescue);
 }
@@ -353,7 +374,124 @@ function respawnFromY() {
   highestPlatY    = 0;
   worldGenBottom  = 800;
   cameraY         = 0;
+  resetTokens();
   generateUpTo(-H * 2);
+}
+
+// ════════════════════════════════════════════════════════════
+//  CHALLENGE MODE - numbered tokens taken in order
+// ════════════════════════════════════════════════════════════
+const TOKEN_EVERY = 3;       // one token per this many platforms
+let tokens = [];
+let tokenNeed = 1;           // number the player has to grab next
+let tokenSpawnNext = 1;      // number the next spawned token will carry
+let tokenPlatCount = 0;
+let tokenWrongT = 0;
+
+function maybeSpawnToken(p) {
+  if (mode !== 'challenge') return;
+  tokenPlatCount++;
+  if (tokenPlatCount % TOKEN_EVERY !== 0) return;
+  tokens.push({ n: tokenSpawnNext++, x: p.x + p.w / 2, y: p.y - 20, plat: p, flash: 0 });
+}
+
+function resetTokens() {
+  tokens = [];
+  tokenSpawnNext = tokenNeed;
+  tokenPlatCount = 0;
+}
+
+function updateTokens(ms) {
+  if (mode !== 'challenge') return;
+  const pcx = player.x + player.w / 2;
+  const pcy = player.y + player.h / 2;
+  if (tokenWrongT > 0) tokenWrongT -= ms;
+  for (const t of tokens) {
+    if (t.plat && t.plat.vx) t.x = t.plat.x + t.plat.w / 2;
+    if (t.flash > 0) t.flash -= ms;
+    const dx = pcx - t.x, dy = pcy - t.y;
+    if (dx * dx + dy * dy > 24 * 24) continue;
+    if (t.n === tokenNeed) {
+      t.taken = true;
+      tokenNeed++;
+      if (tokenNeed - 1 > bestChallenge) {
+        bestChallenge = tokenNeed - 1;
+        localStorage.setItem('bestChallenge', bestChallenge);
+        LB.queue();
+      }
+      if ((tokenNeed - 1) % 10 === 0) showBanner('TOKEN ' + (tokenNeed - 1) + '!');
+      audio.triggers.gem();
+      for (let i = 0; i < 18; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 2 + Math.random() * 5;
+        particles.push({
+          x: t.x, y: t.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+          life: 1, decay: 0.03, size: 2 + Math.random() * 3,
+          hue: 210 + Math.random() * 20, type: 'splash',
+        });
+      }
+    } else if (t.n > tokenNeed && t.flash <= 0) {
+      t.flash = 700;
+      tokenWrongT = 1500;
+      showBanner('GET ' + tokenNeed + ' FIRST');
+    }
+  }
+  tokens = tokens.filter(t => !t.taken);
+}
+
+function drawTokens(time) {
+  if (mode !== 'challenge') return;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const t of tokens) {
+    if (t.y < cameraY - 40 || t.y > cameraY + H + 40) continue;
+    const isNext = t.n === tokenNeed;
+    const bob = Math.sin(time * 0.004 + t.n) * 3;
+    const r = isNext ? 13 : 11;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 6 + i * Math.PI / 3;
+      const px = t.x + Math.cos(a) * r, py = t.y + bob + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    if (t.flash > 0) ctx.fillStyle = '#ff2244';
+    else ctx.fillStyle = isNext ? '#3d8bff' : '#2a2f4a';
+    ctx.fill();
+    ctx.lineWidth = isNext ? 3 : 1.5;
+    ctx.strokeStyle = isNext ? '#bfe0ff' : '#6fb0ff';
+    ctx.stroke();
+    ctx.fillStyle = isNext ? '#ffffff' : '#9fc4ff';
+    ctx.font = 'bold ' + (isNext ? 12 : 10) + 'px monospace';
+    ctx.fillText(String(t.n), t.x, t.y + bob + 1);
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+// Screen-space arrow at the top or bottom edge pointing to the next token
+function drawTokenArrow(time) {
+  if (mode !== 'challenge' || state !== STATE.PLAYING) return;
+  const t = tokens.find(k => k.n === tokenNeed);
+  if (!t) return;
+  const sy = t.y - cameraY;
+  if (sy > 20 && sy < H - 20) return;
+  const up = sy <= 20;
+  const x = Math.max(24, Math.min(W - 24, t.x));
+  const y = up ? 96 : H - 34;
+  const pulse = 0.6 + 0.4 * Math.abs(Math.sin(time * 0.006));
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = tokenWrongT > 0 ? '#ff2244' : '#3d8bff';
+  ctx.beginPath();
+  if (up) { ctx.moveTo(x, y - 14); ctx.lineTo(x - 12, y + 6); ctx.lineTo(x + 12, y + 6); }
+  else    { ctx.moveTo(x, y + 14); ctx.lineTo(x - 12, y - 6); ctx.lineTo(x + 12, y - 6); }
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#bfe0ff';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'center';
+  const dist = Math.round(Math.abs(t.y - player.y) / 10);
+  ctx.fillText(tokenNeed + '  ' + dist + 'm', x, up ? y + 20 : y - 12);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -384,6 +522,8 @@ function initPlayer() {
 // ════════════════════════════════════════════════════════════
 //  SCORE
 // ════════════════════════════════════════════════════════════
+let mode = (localStorage.getItem('ascendMode') === 'challenge') ? 'challenge' : 'climb';
+let bestChallenge = parseInt(localStorage.getItem('bestChallenge') || '0');
 let score = 0;      // max height in "meters" (world units / 10)
 let best  = parseInt(localStorage.getItem('best') || '0');
 
@@ -1125,6 +1265,9 @@ function initGame() {
   score           = 0;
   highestPlatY    = 0;
   worldGenBottom  = 800;
+  tokenNeed       = 1;
+  tokenWrongT     = 0;
+  resetTokens();
   addGround();
   generateUpTo(-H * 2);
   initPlayer();
@@ -1308,7 +1451,7 @@ function updatePhysics(dt, ms) {
   const height = Math.floor(-player.y / 10);
   if (height > score) {
     score = height;
-    if (score > best) {
+    if (mode === 'climb' && score > best) {
       best = score;
       localStorage.setItem('best', best);
       LB.queue();
@@ -1419,6 +1562,7 @@ function render(time) {
   drawRockets(time);
   drawGliders(time);
   drawGems(time);
+  drawTokens(time);
 
   // Coins (descent minigame)
   drawCoins(time);
@@ -1472,6 +1616,7 @@ function render(time) {
   ctx.restore();
 
   drawHUD();
+  drawTokenArrow(time);
   drawBanner();
   drawTouchHints();
 }
@@ -1576,7 +1721,14 @@ function drawHUD() {
   // Best
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '11px monospace';
-  ctx.fillText('best ' + best + 'm', W - 14, 46);
+  if (mode === 'challenge') {
+    ctx.fillText('best ' + bestChallenge + ' tokens', W - 14, 46);
+    ctx.fillStyle = '#6fb0ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('next ⬡ ' + tokenNeed, W - 14, 132);
+  } else {
+    ctx.fillText('best ' + best + 'm', W - 14, 46);
+  }
 
   // Parachute indicator
   if (player && !player.onGround && !player.chute && player.vy > 0) {
@@ -1607,6 +1759,9 @@ function drawMenu() {
   ctx.font = 'bold 32px monospace';
   ctx.textAlign = 'center';
   ctx.fillText('ASCEND', W / 2, H / 2 - 30);
+  ctx.fillStyle = '#6fb0ff';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText(mode === 'challenge' ? 'CHALLENGE MODE' : 'CLIMB MODE', W / 2, H / 2 - 54);
 
   ctx.fillStyle = CFG.UI_DIM;
   ctx.font = '13px monospace';
@@ -1617,10 +1772,16 @@ function drawMenu() {
   ctx.font = 'bold 14px monospace';
   ctx.fillText('tap to start', W / 2, H / 2 + 56);
 
-  if (best > 0) {
+  const menuBest = mode === 'challenge' ? bestChallenge : best;
+  if (menuBest > 0) {
     ctx.fillStyle = CFG.SCORE_COL;
     ctx.font = '11px monospace';
-    ctx.fillText('best: ' + best + 'm', W / 2, H / 2 + 80);
+    ctx.fillText('best: ' + menuBest + (mode === 'challenge' ? ' tokens' : 'm'), W / 2, H / 2 + 80);
+  }
+  if (mode === 'challenge') {
+    ctx.fillStyle = CFG.UI_DIM;
+    ctx.font = '11px monospace';
+    ctx.fillText('grab tokens in order: 1, 2, 3...', W / 2, H / 2 + 120);
   }
   ctx.fillStyle = '#6fb0ff';
   ctx.font = '11px monospace';
@@ -1667,6 +1828,7 @@ function loop(ts) {
     updateRockets(ms);
     updateGliders();
     updateGems();
+    updateTokens(ms);
     updateMovingPlatforms(dt);
     updateWind(ms);
     updateStreaks();
@@ -1681,7 +1843,7 @@ function loop(ts) {
 //  GLOBAL LEADERBOARD (ascend-backend on Railway)
 // ════════════════════════════════════════════════════════════
 const LB = {
-  open: false, api: null, timer: null, posted: 0,
+  open: false, api: null, timer: null, posted: 0, postedC: 0,
   name: localStorage.getItem('ascendName') || '',
   el: id => document.getElementById(id),
   clean(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9 _.-]/g, '').trim().slice(0, 12); },
@@ -1708,7 +1870,7 @@ const LB = {
       if (r.name === this.name) li.className = 'me';
       const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = (i + 1) + '.';
       const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
-      const sc = document.createElement('span'); sc.textContent = r.score + 'm';
+      const sc = document.createElement('span'); sc.textContent = r.score + (mode === 'challenge' ? ' ⬡' : 'm');
       li.append(rk, nm, sc);
       ol.appendChild(li);
     });
@@ -1717,28 +1879,42 @@ const LB = {
     const api = await this.findApi();
     if (!api) { this.status('leaderboard offline'); return; }
     try {
-      const r = await fetch(api + '/scores');
+      const r = await fetch(api + '/scores?mode=' + mode);
       const j = await r.json();
       this.status(this.name ? 'posting as ' + this.name : 'enter a name to post your best');
       this.render(j.scores || []);
     } catch (e) { this.status('leaderboard offline'); }
   },
   async post() {
-    if (!this.name || best < 1 || best <= this.posted) return;
+    if (!this.name) return;
     const api = await this.findApi();
     if (!api) return;
-    try {
-      const r = await fetch(api + '/scores', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: this.name, score: best }),
-      });
-      const j = await r.json();
-      if (j.ok) {
-        this.posted = best;
-        localStorage.setItem('ascendPosted', String(best));
-        if (this.open) { this.render(j.scores || []); this.status('posted ' + best + 'm, rank ' + j.rank); }
-      }
-    } catch (e) {}
+    const jobs = [];
+    if (best > 0 && best > this.posted) jobs.push(['climb', best]);
+    if (bestChallenge > 0 && bestChallenge > this.postedC) jobs.push(['challenge', bestChallenge]);
+    for (const [m, val] of jobs) {
+      try {
+        const r = await fetch(api + '/scores', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.name, score: val, mode: m }),
+        });
+        const j = await r.json();
+        if (!j.ok) continue;
+        if (m === 'climb') { this.posted = val; localStorage.setItem('ascendPosted', String(val)); }
+        else { this.postedC = val; localStorage.setItem('ascendPostedC', String(val)); }
+        if (this.open && m === mode) {
+          this.render(j.scores || []);
+          this.status('posted ' + val + (m === 'challenge' ? ' tokens' : 'm') + ', rank ' + j.rank);
+        }
+      } catch (e) {}
+    }
+  },
+  setMode(m) {
+    mode = m;
+    localStorage.setItem('ascendMode', m);
+    this.el('modeClimb').className = m === 'climb' ? 'on' : '';
+    this.el('modeChallenge').className = m === 'challenge' ? 'on' : '';
+    this.el('lbTitle').textContent = (m === 'challenge' ? 'CHALLENGE' : 'CLIMB') + ' LEADERBOARD';
   },
   queue() {
     clearTimeout(this.timer);
@@ -1759,7 +1935,19 @@ const LB = {
   },
   init() {
     const n = parseInt(localStorage.getItem('ascendPosted') || '0');
-    this.posted = (localStorage.getItem('ascendPostedName') === this.name) ? n : 0;
+    const sameName = localStorage.getItem('ascendPostedName') === this.name;
+    this.posted = sameName ? n : 0;
+    this.postedC = sameName ? parseInt(localStorage.getItem('ascendPostedC') || '0') : 0;
+    this.setMode(mode);
+    ['modeClimb', 'modeChallenge'].forEach(id => this.el(id).addEventListener('click', e => {
+      const m = e.currentTarget.dataset.mode;
+      if (m === mode) return;
+      this.setMode(m);
+      state = STATE.MENU;
+      initGame();
+      this.status('loading');
+      this.load();
+    }));
     const stop = e => e.stopPropagation();
     ['touchstart', 'touchmove', 'touchend'].forEach(t => {
       this.el('lbPanel').addEventListener(t, stop, { passive: true });
@@ -1770,12 +1958,12 @@ const LB = {
     this.el('lbSave').addEventListener('click', async () => {
       const nm = this.clean(this.el('lbName').value);
       if (!nm) { this.status('name needs letters or numbers'); return; }
-      if (nm !== this.name) { this.posted = 0; }
+      if (nm !== this.name) { this.posted = 0; this.postedC = 0; }
       this.name = nm;
       this.el('lbName').value = nm;
       localStorage.setItem('ascendName', nm);
       localStorage.setItem('ascendPostedName', nm);
-      if (best > 0) { this.status('posting'); await this.post(); }
+      if (best > 0 || bestChallenge > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.post(); });

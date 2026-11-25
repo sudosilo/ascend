@@ -3,7 +3,8 @@ const http = require('http');
 const { createClient } = require('redis');
 
 const PORT = process.env.PORT || 8080;
-const KEY = 'ascend:scores';
+const KEYS = { climb: 'ascend:scores', challenge: 'ascend:scores:challenge' };
+const keyFor = m => KEYS[m] || KEYS.climb;
 const MAX_SCORE = 1000000;
 const TOP_N = 25;
 
@@ -34,17 +35,18 @@ function send(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
-async function top() {
-  const rows = await redis.zRangeWithScores(KEY, 0, TOP_N - 1, { REV: true });
+async function top(mode) {
+  const rows = await redis.zRangeWithScores(keyFor(mode), 0, TOP_N - 1, { REV: true });
   return rows.map(r => ({ name: r.value, score: r.score }));
 }
 
 const server = http.createServer(async (req, res) => {
   try {
-    const path = req.url.split('?')[0];
+    const u = new URL(req.url, 'http://x');
+    const path = u.pathname;
     if (req.method === 'OPTIONS') return send(res, 204, {});
     if (req.method === 'GET' && path === '/') return send(res, 200, { ok: true, app: 'ascend-backend' });
-    if (req.method === 'GET' && path === '/scores') return send(res, 200, { scores: await top() });
+    if (req.method === 'GET' && path === '/scores') return send(res, 200, { scores: await top(u.searchParams.get('mode')) });
     if (req.method === 'POST' && path === '/scores') {
       const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
       if (limited(ip)) return send(res, 429, { error: 'slow down' });
@@ -56,9 +58,10 @@ const server = http.createServer(async (req, res) => {
       const score = Math.floor(Number(data.score));
       if (!name) return send(res, 400, { error: 'name required' });
       if (!Number.isFinite(score) || score < 1 || score > MAX_SCORE) return send(res, 400, { error: 'bad score' });
-      await redis.zAdd(KEY, [{ score, value: name }], { GT: true });
-      const rank = await redis.zRevRank(KEY, name);
-      return send(res, 200, { ok: true, rank: rank === null ? null : rank + 1, scores: await top() });
+      const mode = KEYS[data.mode] ? data.mode : 'climb';
+      await redis.zAdd(keyFor(mode), [{ score, value: name }], { GT: true });
+      const rank = await redis.zRevRank(keyFor(mode), name);
+      return send(res, 200, { ok: true, mode, rank: rank === null ? null : rank + 1, scores: await top(mode) });
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {
