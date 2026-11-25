@@ -9,7 +9,16 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v1.7 - GAUNTLET, JEWELS, POWER-UP SPACING   ║
+║  CURRENT BUILD : v1.8 - NO MORE BLANK SKY, RESULT SCREENS    ║
+║  v1.8: fixed the Cloud Kingdom crash (snowflake radius went  ║
+║        negative and killed the render, leaving a blank sky). ║
+║        Loop is now crash proof. Zones extended with NORTHERN ║
+║        LIGHTS and EMERALD NIGHT before looping. Career level ║
+║        clears stop on a RESULT screen with the clear time,   ║
+║        best time and rank; tap for the next level. Each      ║
+║        career level has its own fastest time leaderboard     ║
+║        (backend board lvN, lower is better). Game over and   ║
+║        result screens prompt for a name if none is set.      ║
 ║  v1.7: GAUNTLET mode: industrial look, three lives, no       ║
 ║        parachute, falling below your last platform costs a  ║
 ║        life, turrets fire aimed rounds every ~1.3 to 2.2s.  ║
@@ -179,6 +188,7 @@
     border-bottom: 1px solid #1c2a55;
   }
   #lbList li.me { color: #ffe066; }
+  #lbList li.hd { color: #6fb0ff; font-weight: bold; margin-top: 14px; border-bottom: 2px solid #3d8bff; }
   #lbList .rk { color: #6fb0ff; width: 28px; }
   #lbList .nm { flex: 1; }
 </style>
@@ -294,8 +304,10 @@ canvas.addEventListener('touchend',   e => {
 function handleTouchStart(e) {
   e.preventDefault();
   SFX.unlock();
-  // Tap to start / retry from menu or dead screen
+  // Tap to start / retry from menu or dead screen, or continue from a result
   if (state !== STATE.PLAYING) {
+    if (performance.now() - stateSince < 700) return;   // ignore the thumb still on the glass
+    if (state === STATE.RESULT) { advanceFromResult(); return; }
     setState(STATE.PLAYING);
     return;
   }
@@ -332,18 +344,22 @@ function getInput() {
 // ════════════════════════════════════════════════════════════
 //  STATE MACHINE
 // ════════════════════════════════════════════════════════════
-const STATE = { MENU: 'menu', PLAYING: 'playing', DEAD: 'dead' };
+const STATE = { MENU: 'menu', PLAYING: 'playing', DEAD: 'dead', RESULT: 'result' };
 let state = STATE.MENU;
 
+let stateSince = 0;
 function setState(s) {
   state = s;
+  stateSince = performance.now();
   if (s === STATE.PLAYING) initGame();
 }
 
 window.addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT') return;
-  if ((e.code === 'Space' || e.code === 'Enter') && state !== STATE.PLAYING)
-    setState(STATE.PLAYING);
+  if ((e.code === 'Space' || e.code === 'Enter') && state !== STATE.PLAYING) {
+    if (performance.now() - stateSince < 700) return;
+    if (state === STATE.RESULT) advanceFromResult(); else setState(STATE.PLAYING);
+  }
 });
 
 // ════════════════════════════════════════════════════════════
@@ -604,13 +620,15 @@ function drawSolid(p, time) {
 // ════════════════════════════════════════════════════════════
 //  ZONES - every stretch of height has its own sky, weather and feel
 // ════════════════════════════════════════════════════════════
-const ZONE_CYCLE = 6000;   // meters before the zones loop with a new lap
+const ZONE_CYCLE = 10000;  // meters before the zones loop with a new lap
 const ZONES = [
   { at: 0,    name: 'NEON BASEMENT', top: '#0d0d14', bot: '#0d0d14', grid: '#8899ff', starA: 1,   weather: 'rain',  wcol: '160,190,255', player: '#e8e8d0', grav: 1.00, wind: 1.0 },
   { at: 600,  name: 'SUNRISE DECK',  top: '#bfe3ff', bot: '#ffd9b8', grid: '#e08a5a', starA: 0.2, weather: 'rain',  wcol: '70,110,190',  player: '#1f3a8a', grav: 1.00, wind: 1.3 },
   { at: 1500, name: 'CLOUD KINGDOM', top: '#d6ebff', bot: '#f4f9ff', grid: '#7aa6e0', starA: 0.1, weather: 'snow',  wcol: '120,160,230', player: '#1f3a8a', grav: 0.95, wind: 1.6 },
   { at: 2700, name: 'AURORA FIELD',  top: '#e6dcff', bot: '#e3fff2', grid: '#8a6be0', starA: 0.3, weather: 'spark', wcol: '90,200,160',  player: '#2a2a8a', grav: 0.92, wind: 0.8 },
   { at: 4200, name: 'STRATOSPHERE',  top: '#b8c8e8', bot: '#e9eef7', grid: '#3d8bff', starA: 0.6, weather: 'dust',  wcol: '60,80,140',   player: '#0f2a6e', grav: 0.86, wind: 2.0 },
+  { at: 6000, name: 'NORTHERN LIGHTS', top: '#06142e', bot: '#0b2a3a', grid: '#3dffb0', starA: 1, weather: 'snow', wcol: '200,230,255', player: '#e8f1ff', grav: 0.90, wind: 1.2, aurora: true },
+  { at: 8000, name: 'EMERALD NIGHT', top: '#032018', bot: '#0d3b2a', grid: '#3d8bff', starA: 0.8, weather: 'spark', wcol: '80,255,160', player: '#bfe0ff', grav: 0.94, wind: 1.0, aurora: true },
 ];
 let zoneIdx = 0, zoneLap = 0;
 const zoneFeel = { grav: 1, wind: 1 };
@@ -677,6 +695,29 @@ function drawZoneSky() {
   g.addColorStop(1, z.bot);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+  if (ZONES[z.i].aurora || ZONES[z.j].aurora) {
+    const a = ZONES[z.i].aurora ? (ZONES[z.j].aurora ? 1 : 1 - z.t) : z.t;
+    const t = performance.now() * 0.0004;
+    const bands = [['61,255,176', 0.30], ['61,139,255', 0.22], ['176,110,255', 0.18]];
+    bands.forEach(([col, base], k) => {
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 12) {
+        const y = H * (0.18 + k * 0.1) + Math.sin(x * 0.012 + t * (1.5 + k) + k) * 26 + Math.sin(x * 0.031 - t * 2) * 10;
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      for (let x = W; x >= 0; x -= 12) {
+        const y = H * (0.18 + k * 0.1) + 70 + Math.sin(x * 0.01 + t * (1.2 + k)) * 30;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      const g2 = ctx.createLinearGradient(0, H * (0.12 + k * 0.1), 0, H * (0.36 + k * 0.1));
+      g2.addColorStop(0, 'rgba(' + col + ',0)');
+      g2.addColorStop(0.4, 'rgba(' + col + ',' + (base * a) + ')');
+      g2.addColorStop(1, 'rgba(' + col + ',0)');
+      ctx.fillStyle = g2;
+      ctx.fill();
+    });
+  }
   if (z.lapHue) {
     ctx.globalAlpha = 0.08;
     ctx.fillStyle = 'hsl(' + z.lapHue + ', 80%, 60%)';
@@ -1206,7 +1247,7 @@ function drawStreaks() {
       ctx.globalAlpha = s.life * (Z.weather === 'dust' ? 0.5 : 0.8);
       if (Z.weather === 'snow') {
         ctx.fillStyle = 'rgba(' + Z.wcol + ',0.9)';
-        ctx.beginPath(); ctx.arc(s.x, s.y, 1.5 + (s.y % 3), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x, s.y, 1.5 + Math.abs(s.y % 3), 0, Math.PI * 2); ctx.fill();
       } else if (Z.weather === 'spark') {
         ctx.fillStyle = (Math.floor(s.y / 40) % 2) ? 'rgba(' + Z.wcol + ',1)' : 'rgba(150,110,240,1)';
         ctx.fillRect(s.x, s.y, 2, 6);
@@ -1755,6 +1796,7 @@ function loseLife(reason) {
     GHOST.dirty = true; GHOST.save();
     LB.queue();
     state = STATE.DEAD;
+    stateSince = performance.now();
     audio.triggers.die();
     return;
   }
@@ -2027,26 +2069,45 @@ function applyDifficulty() {
   }
 }
 
+let levelTime = 0;
+const result = { level: 1, time: 0, best: 0, newBest: false, rank: null, posting: false };
+function lvBestTime(n) { return parseInt(localStorage.getItem('ascendLvTime_' + n) || '0'); }
+function fmtTime(ms) {
+  const t = Math.max(0, Math.round(ms / 100));
+  const m = Math.floor(t / 600), sec = Math.floor((t % 600) / 10), d = t % 10;
+  return m + ':' + String(sec).padStart(2, '0') + '.' + d;
+}
+
+function advanceFromResult() {
+  if (careerLevel < LEVEL_COUNT) {
+    careerLevel++;
+    localStorage.setItem('ascendCareerLevel', careerLevel);
+    LB.syncLevel();
+    setState(STATE.PLAYING);
+  } else {
+    setState(STATE.MENU);
+    initGame();
+  }
+}
+
 function checkLevel(ms) {
   if (mode !== 'career') return;
   if (levelDoneT > 0) {
     levelDoneT -= ms;
     if (levelDoneT <= 0) {
       levelDoneT = 0;
-      if (careerLevel < LEVEL_COUNT) {
-        careerLevel++;
-        localStorage.setItem('ascendCareerLevel', careerLevel);
-        LB.syncLevel();
-        setState(STATE.PLAYING);
-      } else {
-        state = STATE.MENU;
-        initGame();
-      }
+      setState(STATE.RESULT);
     }
     return;
   }
   if (score >= LEVEL_TARGET(careerLevel)) {
-    levelDoneT = 2600;
+    levelDoneT = 1400;
+    const prev = lvBestTime(careerLevel);
+    result.level = careerLevel; result.time = levelTime; result.rank = null;
+    result.newBest = !prev || levelTime < prev;
+    result.best = result.newBest ? levelTime : prev;
+    if (result.newBest) localStorage.setItem('ascendLvTime_' + careerLevel, String(Math.round(levelTime)));
+    LB.postTime(careerLevel, Math.round(levelTime));
     if (careerLevel > careerCleared) {
       careerCleared = careerLevel;
       localStorage.setItem('ascendCareerCleared', careerCleared);
@@ -2376,6 +2437,7 @@ function initGame() {
   tokenWrongT     = 0;
   zoneIdx = 0; zoneLap = 0; zoneFeel.grav = 1; zoneFeel.wind = 1;
   levelDoneT = 0;
+  levelTime = 0;
   blaze = [];
   lives = GAUNTLET_LIVES; checkpoint = null; invulnT = 0; turrets = []; bullets = [];
   jewels = []; jewelScore = 0; jewelPlat = 0; for (const k in jewelSets) delete jewelSets[k];
@@ -2641,6 +2703,7 @@ function render(time) {
 
   if (state === STATE.MENU) { drawMenu(); return; }
   if (state === STATE.DEAD)  { drawDead(); return; }
+  if (state === STATE.RESULT) { drawResult(); return; }
 
   drawZoneSky();
 
@@ -3053,6 +3116,36 @@ function drawMenu() {
   ctx.fillText('☰ global leaderboard', W / 2, H / 2 + 100);
 }
 
+function drawNamePrompt(y) {
+  if (LB.name) return;
+  ctx.fillStyle = '#3d8bff';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('tap ☰ to enter your name and post this score', W / 2, y);
+}
+
+function drawResult() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#3d8bff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('CAREER', W / 2, H / 2 - 92);
+  ctx.fillStyle = CFG.UI_TEXT;
+  ctx.font = 'bold 26px monospace';
+  ctx.fillText(result.level === LEVEL_COUNT ? 'CAREER COMPLETE' : 'LEVEL ' + result.level + ' CLEAR', W / 2, H / 2 - 60);
+  ctx.fillStyle = CFG.SCORE_COL;
+  ctx.font = 'bold 30px monospace';
+  ctx.fillText(fmtTime(result.time), W / 2, H / 2 - 18);
+  ctx.font = '12px monospace';
+  ctx.fillStyle = result.newBest ? '#3d8bff' : CFG.UI_DIM;
+  ctx.fillText(result.newBest ? 'new best time!' : 'best ' + fmtTime(result.best), W / 2, H / 2 + 6);
+  ctx.fillStyle = CFG.UI_DIM;
+  ctx.fillText(LB.name ? (result.posting ? 'posting...' : result.rank ? 'rank ' + result.rank + ' on level ' + result.level + ' times' : 'saved') : '', W / 2, H / 2 + 28);
+  drawNamePrompt(H / 2 + 28);
+  ctx.fillStyle = CFG.ACCENT;
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText(result.level === LEVEL_COUNT ? 'tap for the menu' : 'tap for level ' + (result.level + 1), W / 2, H / 2 + 64);
+}
+
 function drawDead() {
   ctx.fillStyle = CFG.UI_TEXT;
   ctx.font = 'bold 26px monospace';
@@ -3070,6 +3163,7 @@ function drawDead() {
     ctx.fillStyle = CFG.UI_DIM;
     ctx.font = '12px monospace';
     ctx.fillText('tap to run it again', W / 2, H / 2 + 50);
+    drawNamePrompt(H / 2 + 76);
     return;
   }
 
@@ -3094,7 +3188,16 @@ function drawDead() {
 let lastTs = 0;
 let worldClock = 0;
 
+let loopErrors = 0;
 function loop(ts) {
+  requestAnimationFrame(loop);
+  try { tick(ts); } catch (e) {
+    // never let one bad frame freeze or blank the game
+    if (loopErrors++ < 5) console.error('ascend frame error', e);
+    try { ctx.restore(); ctx.globalAlpha = 1; ctx.shadowBlur = 0; } catch (e2) {}
+  }
+}
+function tick(ts) {
   const ms = Math.min(ts - lastTs, 50); // cap spike
   const dt = ms / 16.67;
   lastTs = ts;
@@ -3122,9 +3225,8 @@ function loop(ts) {
     checkMilestones();
     checkLevel(ms);
   }
+  if (state === STATE.PLAYING && !LB.open && mode === 'career' && levelDoneT <= 0) levelTime += ms;
   render(state === STATE.PLAYING ? worldClock : ts);
-
-  requestAnimationFrame(loop);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -3149,16 +3251,25 @@ const LB = {
     }
     return null;
   },
-  render(rows) {
+  render(rows, kind, append) {
     const ol = this.el('lbList');
-    ol.innerHTML = '';
-    if (!rows.length) { this.status('no scores yet, go set one'); return; }
+    if (!append) ol.innerHTML = '';
+    if (append) {
+      const h = document.createElement('li');
+      h.className = 'hd';
+      h.textContent = 'MOST LEVELS CLEARED';
+      ol.appendChild(h);
+    }
+    if (!rows.length) {
+      if (!append && !kind) { this.status('no scores yet, go set one'); return; }
+      const li = document.createElement('li'); li.textContent = 'no scores yet'; ol.appendChild(li); return;
+    }
     rows.forEach((r, i) => {
       const li = document.createElement('li');
       if (r.name === this.name) li.className = 'me';
       const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = (i + 1) + '.';
       const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
-      const sc = document.createElement('span'); sc.textContent = mode === 'career' ? 'LV ' + r.score : r.score + (mode === 'challenge' ? ' ⬡' : mode === 'jewels' ? ' ◆' : 'm');
+      const sc = document.createElement('span'); sc.textContent = kind === 'time' ? fmtTime(r.score) : mode === 'career' ? 'LV ' + r.score : r.score + (mode === 'challenge' ? ' ⬡' : mode === 'jewels' ? ' ◆' : 'm');
       li.append(rk, nm, sc);
       ol.appendChild(li);
     });
@@ -3167,6 +3278,16 @@ const LB = {
     const api = await this.findApi();
     if (!api) { this.status('leaderboard offline'); return; }
     try {
+      if (mode === 'career') {
+        const [rt, rc] = await Promise.all([
+          fetch(api + '/scores?mode=lv' + careerLevel).then(x => x.json()),
+          fetch(api + '/scores?mode=career').then(x => x.json()),
+        ]);
+        this.status(this.name ? 'posting as ' + this.name : 'enter a name to post your scores');
+        this.render(rt.scores || [], 'time');
+        this.render(rc.scores || [], 'levels', true);
+        return;
+      }
       const r = await fetch(api + '/scores?mode=' + mode);
       const j = await r.json();
       this.status(this.name ? 'posting as ' + this.name : 'enter a name to post your best');
@@ -3203,6 +3324,29 @@ const LB = {
       } catch (e) {}
     }
   },
+  async postTime(level, ms) {
+    if (!this.name) { this.pendingTime = { level, ms }; return; }
+    const api = await this.findApi();
+    if (!api) return;
+    result.posting = true;
+    try {
+      const r = await fetch(api + '/scores', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.name, score: ms, mode: 'lv' + level }),
+      });
+      const j = await r.json();
+      if (j.ok && result.level === level) result.rank = j.rank;
+      if (this.open && mode === 'career') this.load();
+    } catch (e) {}
+    result.posting = false;
+    this.pendingTime = null;
+  },
+  async postAllTimes() {
+    for (let n = 1; n <= LEVEL_COUNT; n++) {
+      const t = lvBestTime(n);
+      if (t > 0) await this.postTime(n, t);
+    }
+  },
   setMode(m) {
     mode = m;
     localStorage.setItem('ascendMode', m);
@@ -3211,10 +3355,12 @@ const LB = {
     this.el('modeCareer').className = m === 'career' ? 'on' : '';
     this.el('modeGauntlet').className = m === 'gauntlet' ? 'on' : '';
     this.el('modeJewels').className = m === 'jewels' ? 'on' : '';
-    this.el('lbTitle').textContent = ({ challenge: 'CHALLENGE', career: 'CAREER', gauntlet: 'GAUNTLET', jewels: 'JEWELS' }[m] || 'MARATHON') + ' LEADERBOARD';
+    this.el('lbTitle').textContent = m === 'career' ? 'LEVEL ' + careerLevel + ' FASTEST TIMES'
+      : ({ challenge: 'CHALLENGE', gauntlet: 'GAUNTLET', jewels: 'JEWELS' }[m] || 'MARATHON') + ' LEADERBOARD';
     this.syncLevel();
   },
   syncLevel() {
+    if (mode === 'career') this.el('lbTitle').textContent = 'LEVEL ' + careerLevel + ' FASTEST TIMES';
     this.el('lvText').textContent = 'LEVEL ' + careerLevel + '  ' + LEVEL_TARGET(careerLevel) + 'm';
     this.el('lbLevel').style.opacity = mode === 'career' ? '1' : '0.45';
   },
@@ -3294,6 +3440,7 @@ const LB = {
       this.el('lbName').value = nm;
       localStorage.setItem('ascendName', nm);
       localStorage.setItem('ascendPostedName', nm);
+      this.postAllTimes();
       if (best > 0 || bestChallenge > 0 || careerCleared > 0 || bestGauntlet > 0 || bestJewels > 0) { this.status('posting'); await this.post(); }
       this.load();
     });
