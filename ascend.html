@@ -7,9 +7,13 @@
 
 <!--
 ╔══════════════════════════════════════════════════════════════╗
-║  ITERATION MANIFEST — READ THIS FIRST                        ║
+║  ITERATION MANIFEST - READ THIS FIRST                        ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CURRENT BUILD : v0.9 — MILESTONES                           ║
+║  CURRENT BUILD : v1.0 - GLOBAL LEADERBOARD                   ║
+║  v1.0: ☰ button upper left opens a left side overlay with   ║
+║        name entry and the global top list. Best height      ║
+║        posts to ascend-backend (Railway, Redis sorted set). ║
+║        Backend URL read from ascend-api-v1.json.            ║
 ║  v0.9: gem spawn 0.35 (climb currency ◆), rocket 0.18,      ║
 ║        glider 0.10. Every 30 gems AND every 30 coins grants ║
 ║        a power-up instantly (alternating rocket/glider),    ║
@@ -49,7 +53,7 @@
 ║  ✓ Platforms cull when off-screen (memory safe)              ║
 ║  ✓ Height score (meters climbed)                             ║
 ║  ✓ Best height persisted in localStorage                     ║
-║  ✓ Parachute — auto-deploys after 2s free-fall               ║
+║  ✓ Parachute - auto-deploys after 2s free-fall               ║
 ║  ✓ Parachute caps fall speed, drawn as canopy above player   ║
 ║  ✓ Parachute collapses on landing                            ║
 ║  ✓ Coyote time (100ms grace after walking off edge)          ║
@@ -61,7 +65,7 @@
 ║  ✗ Enemies / hazards                                         ║
 ║  ✗ Moving platforms                                          ║
 ╠══════════════════════════════════════════════════════════════╣
-║  RED PHONE: built v0.2 — infinite scroll + parachute         ║
+║  RED PHONE: built v0.2 - infinite scroll + parachute         ║
 ╚══════════════════════════════════════════════════════════════╝
 -->
 
@@ -83,10 +87,57 @@
     image-rendering: pixelated;
     image-rendering: crisp-edges;
   }
+
+  #lbBtn {
+    position: fixed; left: 14px; top: 40px; z-index: 20;
+    width: 44px; height: 44px; border-radius: 10px;
+    border: 2px solid #3d8bff; background: rgba(13,13,20,0.85);
+    color: #6fb0ff; font: bold 22px monospace; line-height: 1;
+  }
+  #lbPanel {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 30;
+    width: min(320px, 82vw); padding: 18px 16px;
+    background: rgba(10,18,40,0.96); border-right: 3px solid #3d8bff;
+    color: #d8e6ff; font: 14px monospace;
+    transform: translateX(-105%); transition: transform 0.18s ease-out;
+    overflow-y: auto; touch-action: pan-y;
+  }
+  #lbPanel.open { transform: translateX(0); }
+  #lbPanel h2 { font-size: 18px; color: #6fb0ff; margin-bottom: 12px; letter-spacing: 2px; }
+  #lbPanel label { display: block; color: #8aa0c8; font-size: 11px; margin-bottom: 4px; }
+  #lbName {
+    width: 100%; padding: 10px; font: bold 16px monospace; text-transform: uppercase;
+    background: #0d1430; color: #ffe066; border: 1px solid #3d8bff; border-radius: 6px;
+  }
+  #lbSave, #lbClose {
+    margin-top: 8px; width: 100%; padding: 10px; font: bold 14px monospace;
+    border-radius: 6px; border: 1px solid #3d8bff;
+  }
+  #lbSave { background: #3d8bff; color: #fff; }
+  #lbClose { background: transparent; color: #6fb0ff; }
+  #lbStatus { min-height: 18px; margin: 10px 0; font-size: 11px; color: #8aa0c8; }
+  #lbList { list-style: none; }
+  #lbList li {
+    display: flex; justify-content: space-between; padding: 6px 4px;
+    border-bottom: 1px solid #1c2a55;
+  }
+  #lbList li.me { color: #ffe066; }
+  #lbList .rk { color: #6fb0ff; width: 28px; }
+  #lbList .nm { flex: 1; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="lbBtn" aria-label="leaderboard">☰</button>
+<div id="lbPanel">
+  <h2>LEADERBOARD</h2>
+  <label for="lbName">YOUR NAME</label>
+  <input id="lbName" maxlength="12" autocomplete="off" spellcheck="false">
+  <button id="lbSave">SAVE NAME AND POST BEST</button>
+  <div id="lbStatus"></div>
+  <ol id="lbList"></ol>
+  <button id="lbClose">CLOSE</button>
+</div>
 <script>
 // ════════════════════════════════════════════════════════════
 //  CONFIG
@@ -130,7 +181,7 @@ const CFG = {
 };
 
 // ════════════════════════════════════════════════════════════
-//  CANVAS — fills full screen, logical coords = pixel coords
+//  CANVAS - fills full screen, logical coords = pixel coords
 // ════════════════════════════════════════════════════════════
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
@@ -151,7 +202,7 @@ const touch = { left: false, right: false, jump: false };
 let jumpPressedThisFrame = false;
 let jumpWasDown = false;
 
-window.addEventListener('keydown', e => { keys[e.code] = true;  e.preventDefault(); });
+window.addEventListener('keydown', e => { if (e.target && e.target.tagName === 'INPUT') return; keys[e.code] = true;  e.preventDefault(); });
 window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -210,12 +261,13 @@ function setState(s) {
 }
 
 window.addEventListener('keydown', e => {
+  if (e.target && e.target.tagName === 'INPUT') return;
   if ((e.code === 'Space' || e.code === 'Enter') && state !== STATE.PLAYING)
     setState(STATE.PLAYING);
 });
 
 // ════════════════════════════════════════════════════════════
-//  WORLD — infinite procedural platforms
+//  WORLD - infinite procedural platforms
 // ════════════════════════════════════════════════════════════
 let platforms = [];
 let cameraY = 0;       // world-Y of the top of the screen
@@ -352,14 +404,14 @@ const audio = {
 };
 
 // ════════════════════════════════════════════════════════════
-//  AESTHETICS — RED PHONE: particles, starfield, sparkles
+//  AESTHETICS - RED PHONE: particles, starfield, sparkles
 // ════════════════════════════════════════════════════════════
 
 // ── Particle system ──────────────────────────────────────────
 let particles = [];
 
 function spawnSplash(x, y, hue) {
-  // Color splash — fast radial burst
+  // Color splash - fast radial burst
   for (let i = 0; i < 14; i++) {
     const a = Math.random() * Math.PI * 2;
     const sp = 2 + Math.random() * 5;
@@ -374,7 +426,7 @@ function spawnSplash(x, y, hue) {
       type: 'splash',
     });
   }
-  // Dust cloud — slow drifting puffs
+  // Dust cloud - slow drifting puffs
   for (let i = 0; i < 8; i++) {
     particles.push({
       x: x + (Math.random() - 0.5) * 30,
@@ -434,7 +486,7 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-// ── COIN DESCENT MINIGAME — RED PHONE ────────────────────────
+// ── COIN DESCENT MINIGAME - RED PHONE ────────────────────────
 // Coins spawn below the player while the parachute is open.
 // Steer left/right to catch them. Each catch = gold sparkle burst.
 let coins = [];
@@ -532,7 +584,7 @@ function drawCoins(time) {
   }
 }
 
-// ── MILESTONES — RED PHONE ───────────────────────────────────
+// ── MILESTONES - RED PHONE ───────────────────────────────────
 // Every 30 climb-gems (◆) and every 30 descent-coins (◉) grants a
 // power-up instantly, alternating rocket / glider.
 let nextGemMilestone  = 30;
@@ -593,7 +645,7 @@ function drawBanner() {
   ctx.globalAlpha = 1;
 }
 
-// ── WIND — RED PHONE ─────────────────────────────────────────
+// ── WIND - RED PHONE ─────────────────────────────────────────
 // Global wind drifts between gusts. Pushes the player while airborne
 // (double under chute/glider). Indicated by leaning rain-streaks + motes.
 const wind = { force: 0, target: 0, timer: 0 };
@@ -613,7 +665,7 @@ function updateWind(ms) {
 let streaks = [];
 function updateStreaks() {
   const strength = Math.abs(wind.force);
-  // Spawn rate scales with wind strength — calm = almost none
+  // Spawn rate scales with wind strength - calm = almost none
   if (Math.random() < 0.1 + strength * 3) {
     streaks.push({
       x: Math.random() * W,
@@ -642,7 +694,7 @@ function drawStreaks() {
   ctx.globalAlpha = 1;
 }
 
-// ── GLIDER POWER-UP — RED PHONE ──────────────────────────────
+// ── GLIDER POWER-UP - RED PHONE ──────────────────────────────
 // Pickup upgrades your parachute to a glider for the rest of the run.
 // Glider: faster fall than chute, steerable dives (hold left/right = speed),
 // tap jump for a small lift pulse to grab missed coins.
@@ -706,7 +758,7 @@ function drawGliders(time) {
   }
 }
 
-// ── GEMS (climb collectible, worth 5) — RED PHONE ────────────
+// ── GEMS (climb collectible, worth 5) - RED PHONE ────────────
 let gems = [];
 let gemCount = 0;
 const GEM_CHANCE = 0.35;
@@ -775,7 +827,7 @@ function drawGems(time) {
   }
 }
 
-// ── CLOUD ZONE (above 300m) — RED PHONE ──────────────────────
+// ── CLOUD ZONE (above 300m) - RED PHONE ──────────────────────
 const CLOUD_START = -3000;  // world y where clouds begin (300m)
 const cloudPuffs = [];
 (function initClouds() {
@@ -815,7 +867,7 @@ function drawClouds(time) {
   ctx.globalAlpha = 1;
 }
 
-// ── ROCKET POWER-UP — RED PHONE ──────────────────────────────
+// ── ROCKET POWER-UP - RED PHONE ──────────────────────────────
 // Pickups spawn on platforms. Grab = 3s uninterrupted upward flight,
 // fire out the back, player turns rocket-shaped, ends with a jump kick.
 let rockets = [];          // pickup items in world
@@ -860,7 +912,7 @@ function updateRockets(ms) {
   if (player.rocketTimer > 0) {
     player.rocketTimer -= ms / 1000;
     player.vy = ROCKET_SPEED;
-    // Fire out the back — every frame
+    // Fire out the back - every frame
     for (let i = 0; i < 3; i++) {
       particles.push({
         x: player.x + player.w / 2 + (Math.random() - 0.5) * 6,
@@ -910,7 +962,7 @@ function drawRockets(time) {
   }
 }
 
-// ── ENERGY LAYER — RED PHONE: trails, shooting stars, motes ──
+// ── ENERGY LAYER - RED PHONE: trails, shooting stars, motes ──
 
 // Player comet trail
 let trail = [];
@@ -1033,7 +1085,7 @@ function drawStarfield(time) {
   }
   ctx.globalAlpha = 1;
 
-  // Faint horizontal grid lines that scroll with the world — strong fall cue
+  // Faint horizontal grid lines that scroll with the world - strong fall cue
   ctx.globalAlpha = 0.05;
   ctx.strokeStyle = '#8899ff';
   ctx.lineWidth = 1;
@@ -1082,7 +1134,7 @@ function updatePhysics(dt, ms) {
   if (inp.left)  player.vx -= CFG.PLAYER_SPEED;
   if (inp.right) player.vx += CFG.PLAYER_SPEED;
 
-  // Wind push — only while airborne, doubled under canopy
+  // Wind push - only while airborne, doubled under canopy
   if (!player.onGround) {
     const windMult = player.chute ? 2.2 : 1.0;
     player.vx += wind.force * windMult * dt;
@@ -1091,9 +1143,9 @@ function updatePhysics(dt, ms) {
   player.vx *= CFG.FRICTION;
   if (Math.abs(player.vx) < 0.05) player.vx = 0;
 
-  // Gravity — none during rocket flight, bubble at apex when holding jump, reduced under chute
+  // Gravity - none during rocket flight, bubble at apex when holding jump, reduced under chute
   if (player.rocketTimer > 0) {
-    // rocket controls vy directly in updateRockets — no gravity
+    // rocket controls vy directly in updateRockets - no gravity
   } else {
     let grav;
     if (player.chute) {
@@ -1130,7 +1182,7 @@ function updatePhysics(dt, ms) {
   }
   if (player.vy > maxFall) player.vy = maxFall;
 
-  // Jump — uses coyote time
+  // Jump - uses coyote time
   const canJump = player.onGround || player.coyoteTimer > 0;
   if (inp.jumpPressed && canJump) {
     player.vy = CFG.JUMP_FORCE;
@@ -1203,7 +1255,7 @@ function updatePhysics(dt, ms) {
         audio.triggers.chuteClose();
       }
 
-      // Landed on a rescue platform OR back on bare ground after a fall —
+      // Landed on a rescue platform OR back on bare ground after a fall -
       // respawn fresh platforms above
       if (p.isRescue || (p.isGround && player.peakY < -300)) {
         respawnFromY();
@@ -1244,6 +1296,7 @@ function updatePhysics(dt, ms) {
     if (score > best) {
       best = score;
       localStorage.setItem('best', best);
+      LB.queue();
     }
   }
 
@@ -1291,7 +1344,7 @@ function render(time) {
   ctx.save();
   ctx.translate(0, -cameraY);
 
-  // Platforms — each with its own neon hue, glow strip, LED sparkle dots
+  // Platforms - each with its own neon hue, glow strip, LED sparkle dots
   for (const p of platforms) {
     const screenY = p.y - cameraY;
     if (screenY > H + 20 || screenY + p.h < -20) continue;
@@ -1308,7 +1361,7 @@ function render(time) {
     const hue = ((p.hue !== undefined ? p.hue : 230) + time * 0.01) % 360;
     const breathe = 0.2 + 0.18 * Math.abs(Math.sin(time * 0.002 + (p.hue || 0)));
 
-    // Soft glow under the platform — pulses
+    // Soft glow under the platform - pulses
     ctx.globalAlpha = breathe;
     ctx.fillStyle = 'hsl(' + hue + ', 100%, 55%)';
     ctx.fillRect(p.x - 4, p.y - 3, p.w + 8, p.h + 8);
@@ -1364,7 +1417,7 @@ function render(time) {
     else drawParachute();
   }
 
-  // Player — rocket shape during flight, box otherwise
+  // Player - rocket shape during flight, box otherwise
   if (player.rocketTimer > 0) {
     const cx = player.x + player.w / 2;
     // Hot glow
@@ -1449,7 +1502,7 @@ function drawParachute() {
   const cx = player.x + player.w / 2;
   const topY = player.y - 38;
 
-  // Canopy — simple arc
+  // Canopy - simple arc
   ctx.fillStyle = CFG.CHUTE;
   ctx.beginPath();
   ctx.arc(cx, topY, 22, Math.PI, 0);
@@ -1549,6 +1602,9 @@ function drawMenu() {
     ctx.font = '11px monospace';
     ctx.fillText('best: ' + best + 'm', W / 2, H / 2 + 80);
   }
+  ctx.fillStyle = '#6fb0ff';
+  ctx.font = '11px monospace';
+  ctx.fillText('☰ global leaderboard', W / 2, H / 2 + 100);
 }
 
 function drawDead() {
@@ -1582,7 +1638,7 @@ function loop(ts) {
   const dt = ms / 16.67;
   lastTs = ts;
 
-  if (state === STATE.PLAYING) {
+  if (state === STATE.PLAYING && !LB.open) {
     updatePhysics(dt, ms);
     updateCoins();
     updateParticles(dt);
@@ -1600,6 +1656,113 @@ function loop(ts) {
 
   requestAnimationFrame(loop);
 }
+
+// ════════════════════════════════════════════════════════════
+//  GLOBAL LEADERBOARD (ascend-backend on Railway)
+// ════════════════════════════════════════════════════════════
+const LB = {
+  open: false, api: null, timer: null, posted: 0,
+  name: localStorage.getItem('ascendName') || '',
+  el: id => document.getElementById(id),
+  clean(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9 _.-]/g, '').trim().slice(0, 12); },
+  status(t) { this.el('lbStatus').textContent = t; },
+  async findApi() {
+    if (this.api) return this.api;
+    const srcs = ['ascend-api-v1.json', 'https://raw.githubusercontent.com/sudosilo/ascend/main/ascend-api-v1.json'];
+    for (const u of srcs) {
+      try {
+        const r = await fetch(u, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j && j.url && /^https:\/\/[^\/]+$/.test(j.url)) { this.api = j.url; return this.api; }
+      } catch (e) {}
+    }
+    return null;
+  },
+  render(rows) {
+    const ol = this.el('lbList');
+    ol.innerHTML = '';
+    if (!rows.length) { this.status('no scores yet, go set one'); return; }
+    rows.forEach((r, i) => {
+      const li = document.createElement('li');
+      if (r.name === this.name) li.className = 'me';
+      const rk = document.createElement('span'); rk.className = 'rk'; rk.textContent = (i + 1) + '.';
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = r.name;
+      const sc = document.createElement('span'); sc.textContent = r.score + 'm';
+      li.append(rk, nm, sc);
+      ol.appendChild(li);
+    });
+  },
+  async load() {
+    const api = await this.findApi();
+    if (!api) { this.status('leaderboard offline'); return; }
+    try {
+      const r = await fetch(api + '/scores');
+      const j = await r.json();
+      this.status(this.name ? 'posting as ' + this.name : 'enter a name to post your best');
+      this.render(j.scores || []);
+    } catch (e) { this.status('leaderboard offline'); }
+  },
+  async post() {
+    if (!this.name || best < 1 || best <= this.posted) return;
+    const api = await this.findApi();
+    if (!api) return;
+    try {
+      const r = await fetch(api + '/scores', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: this.name, score: best }),
+      });
+      const j = await r.json();
+      if (j.ok) {
+        this.posted = best;
+        localStorage.setItem('ascendPosted', String(best));
+        if (this.open) { this.render(j.scores || []); this.status('posted ' + best + 'm, rank ' + j.rank); }
+      }
+    } catch (e) {}
+  },
+  queue() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.post(), 4000);
+  },
+  show() {
+    this.open = true;
+    touch.left = touch.right = touch.jump = false;
+    this.el('lbName').value = this.name;
+    this.el('lbPanel').classList.add('open');
+    this.status('loading');
+    this.load();
+  },
+  hide() {
+    this.open = false;
+    this.el('lbName').blur();
+    this.el('lbPanel').classList.remove('open');
+  },
+  init() {
+    const n = parseInt(localStorage.getItem('ascendPosted') || '0');
+    this.posted = (localStorage.getItem('ascendPostedName') === this.name) ? n : 0;
+    const stop = e => e.stopPropagation();
+    ['touchstart', 'touchmove', 'touchend'].forEach(t => {
+      this.el('lbPanel').addEventListener(t, stop, { passive: true });
+      this.el('lbBtn').addEventListener(t, stop, { passive: true });
+    });
+    this.el('lbBtn').addEventListener('click', () => this.open ? this.hide() : this.show());
+    this.el('lbClose').addEventListener('click', () => this.hide());
+    this.el('lbSave').addEventListener('click', async () => {
+      const nm = this.clean(this.el('lbName').value);
+      if (!nm) { this.status('name needs letters or numbers'); return; }
+      if (nm !== this.name) { this.posted = 0; }
+      this.name = nm;
+      this.el('lbName').value = nm;
+      localStorage.setItem('ascendName', nm);
+      localStorage.setItem('ascendPostedName', nm);
+      if (best > 0) { this.status('posting'); await this.post(); }
+      this.load();
+    });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.post(); });
+    this.post();
+  },
+};
+LB.init();
 
 initGame();
 requestAnimationFrame(loop);
